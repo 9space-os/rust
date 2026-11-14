@@ -59,30 +59,6 @@ impl Rect {
     }
 }
 
-/// a channel descriptor of draw(3) ("x8r8g8b8") as its number (strtochan(2))
-fn strtochan(s: &str) -> Option<u32> {
-    let b = s.as_bytes();
-    if b.is_empty() || b.len() % 2 != 0 {
-        return None;
-    }
-    let mut c = 0u32;
-    for p in b.chunks(2) {
-        let t = match p[0] {
-            b'r' => 0,
-            b'g' => 1,
-            b'b' => 2,
-            b'k' => 3,
-            b'a' => 4,
-            b'm' => 5,
-            b'x' => 6,
-            _ => return None,
-        };
-        let n = (p[1] as char).to_digit(10)?;
-        c = c << 8 | (t << 4 | n);
-    }
-    Some(c)
-}
-
 /// the 12 fields of 12 characters devdraw answers with (draw(3): ctl)
 fn info(b: &[u8]) -> io::Result<Vec<String>> {
     if b.len() < 144 {
@@ -109,12 +85,11 @@ pub struct Draw {
     next: u32,
     name: String,    // the window's, as /dev/winname said
     win: u32,        // its image id: 0 is the screen
-    chan: u32,
     r: Rect,         // the window image's rectangle (with rio's border)
     border: i32,
     screen: Rect,
     opaque: u32,
-    scratch: Option<(u32, i32, i32)>, // an x8r8g8b8 image to load into, where the window is not
+    scratch: Option<(u32, i32, i32)>, // the x8r8g8b8 image put loads into, then draws from
 }
 
 impl Draw {
@@ -132,7 +107,6 @@ impl Draw {
             next: 16,
             name: String::new(),
             win: 0,
-            chan: strtochan(&f[2]).unwrap_or(XRGB32),
             r: screen,
             border: 0,
             screen,
@@ -228,9 +202,8 @@ impl Draw {
             self.border = 0;
             return Ok(());
         }
-        if self.win != 0 && name == self.name {
-            return Ok(());
-        }
+        // the same name too: as libdraw's getwindow, the image named again, for
+        // its rectangle (wsys moves a window by its origin: name and size stay)
         if self.win != 0 {
             let w = self.win;
             self.free(w)?;
@@ -248,7 +221,6 @@ impl Draw {
         let n = self.ctl.pread(&mut b, 0)?;
         let f = info(&b[..n])?;
         self.win = id;
-        self.chan = strtochan(&f[2]).unwrap_or(XRGB32);
         self.r = Rect::new(int(&f[4]), int(&f[5]), int(&f[6]), int(&f[7]));
         // rio's windows have a border; devdraw's screen (noborder.screen.N) has none;
         // at another scale than 1 (wsys' dpi) libdraw's scalesize(BORDERWIDTH)
@@ -273,48 +245,45 @@ impl Draw {
     }
 
     /// w x h pixels of 0x00RRGGBB at the window's top left, those in the
-    /// rectangles of damage (all of them if there are none)
+    /// rectangles of damage (all of them if there are none). They go into an
+    /// image of these pixels first, then into the window by one write of 'd'
+    /// messages: a window system composing the screen meanwhile (wsys on the
+    /// GPU) shows them whole, not the rows of a load that came so far
     pub fn put(&mut self, px: &[u32], w: usize, h: usize, damage: &[Rect]) -> io::Result<()> {
         let c = self.content();
         let all = [Rect::new(0, 0, w as i32, h as i32)];
         let damage = if damage.is_empty() { &all[..] } else { damage };
         let bytes = unsafe { std::slice::from_raw_parts(px.as_ptr() as *const u8, px.len() * 4) };
         let stride = w * 4;
-        let direct = self.chan == XRGB32 || self.chan == ARGB32;
-        let target = if direct {
-            self.win
-        } else {
-            // a window of other pixels: into an image of these, drawn into it
-            if !matches!(self.scratch, Some((_, sw, sh)) if sw == w as i32 && sh == h as i32) {
-                if let Some((id, _, _)) = self.scratch.take() {
-                    self.free(id)?;
-                }
-                let id = self.alloc(Rect::new(0, 0, w as i32, h as i32), XRGB32, false, 0)?;
-                self.scratch = Some((id, w as i32, h as i32));
+        if !matches!(self.scratch, Some((_, sw, sh)) if sw == w as i32 && sh == h as i32) {
+            if let Some((id, _, _)) = self.scratch.take() {
+                self.free(id)?;
             }
-            self.scratch.unwrap().0
-        };
-        for d in damage {
-            // in the buffer, then on the screen (inside the window)
-            let d = d.clip(&all[0]).clip(&Rect::new(0, 0, c.dx(), c.dy()));
-            if d.empty() {
-                continue;
+            let id = self.alloc(Rect::new(0, 0, w as i32, h as i32), XRGB32, false, 0)?;
+            self.scratch = Some((id, w as i32, h as i32));
+        }
+        let scratch = self.scratch.unwrap().0;
+        let shown: Vec<Rect> = damage
+            .iter()
+            .map(|d| d.clip(&all[0]).clip(&Rect::new(0, 0, c.dx(), c.dy())))
+            .filter(|d| !d.empty())
+            .collect();
+        for d in &shown {
+            self.load_at(scratch, d, bytes, stride, d.x0, d.y0)?;
+        }
+        // the loads written; the window's draws in a write of their own
+        self.flushbuf()?;
+        let (win, opaque) = (self.win, self.opaque);
+        for d in &shown {
+            let mut m = vec![b'd'];
+            for id in [win, scratch, opaque] {
+                m.extend_from_slice(&id.to_le_bytes());
             }
-            if direct {
-                self.load_at(target, &d.add(c.x0, c.y0), bytes, stride, d.x0, d.y0)?;
-            } else {
-                self.load_at(target, &d, bytes, stride, d.x0, d.y0)?;
-                let (win, opaque) = (self.win, self.opaque);
-                let mut m = vec![b'd'];
-                for id in [win, target, opaque] {
-                    m.extend_from_slice(&id.to_le_bytes());
-                }
-                rect(&mut m, &d.add(c.x0, c.y0));
-                for v in [d.x0, d.y0, 0, 0] {
-                    m.extend_from_slice(&v.to_le_bytes());
-                }
-                self.cmd(&m)?;
+            rect(&mut m, &d.add(c.x0, c.y0));
+            for v in [d.x0, d.y0, 0, 0] {
+                m.extend_from_slice(&v.to_le_bytes());
             }
+            self.cmd(&m)?;
         }
         self.flush()
     }
