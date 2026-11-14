@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stefan Hertenberger <erde74@gmail.com>
+Date: Sat, 14 Nov 2026 22:50:09 +0100
+Subject: [PATCH 26/26] std: plan9: the stack slots' segattach and segfree with
+ a usize length
+
+The libc crate takes the length as a size_t now (nfront's libc.h:
+usize, 64 bits on amd64).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ library/std/src/sys/pal/plan9/proc.rs | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/library/std/src/sys/pal/plan9/proc.rs b/library/std/src/sys/pal/plan9/proc.rs
+index 165d0c07175139306c5e740365e34173424e6eaf..30a9b7d1bcf1ec73f92dc6275ede615d3c98e01c 100644
+--- a/library/std/src/sys/pal/plan9/proc.rs
++++ b/library/std/src/sys/pal/plan9/proc.rs
+@@ -710,7 +710,7 @@ fn attach_slots() {
+                 libc::SG_CEXEC,
+                 c"memory".as_ptr(),
+                 ptr::with_exposed_provenance_mut(va),
+-                SLOT as libc::ulong,
++                SLOT,
+             )
+         };
+         if r.addr() != va {
+@@ -741,7 +741,7 @@ unsafe fn free_stack(slot: usize, stack: *mut u8) {
+             libc::free(stack.cast());
+         } else {
+             // its pages go back; touched again, they are zero
+-            libc::segfree(stack.cast(), SLOT as libc::ulong);
++            libc::segfree(stack.cast(), SLOT);
+             SLOT_USED[slot].store(false, Release);
+         }
+     }

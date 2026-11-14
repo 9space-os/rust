@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Stefan Hertenberger <erde74@gmail.com>
 Date: Fri, 30 Oct 2026 15:22:31 +0100
-Subject: [PATCH 5/7] plan9: 32-bit (386): usize is the C compiler's unsigned
+Subject: [PATCH 5/8] plan9: 32-bit (386): usize is the C compiler's unsigned
  long, jmp_buf six words
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

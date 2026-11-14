@@ -656,3 +656,8 @@ file locks), std/core/alloc test suites in the guest green except the TCP tests 
 - acid does not read the ELF symbols of the gcc port (tools/pstack + addr2line instead).
 - What Plan 9 does not have (stays so, tests `ignore`d with reason): symlinks, hard links, setting
   atime, reading back TTL/keepalive, linger.
+- **segattach/segfree take a usize (2026-11-14, nfront's libc.h):** the length was a ulong,
+  32 bits on amd64 too, so a segment of 4 GB or more (an APU's video memory) reached the
+  kernel as 0. libc's `segattach`/`segfree` now take `size_t`, std's `proc.rs` passes `SLOT`
+  as it is. After the std rebuild cargo kept crates built with the old std ("can't find crate
+  for `ash`" in the tree's tests/gpu): scripts that run cargo call the tree's `cargostd`.

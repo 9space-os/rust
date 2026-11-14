@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stefan Hertenberger <erde74@gmail.com>
+Date: Sat, 14 Nov 2026 22:50:08 +0100
+Subject: [PATCH 8/8] plan9: segattach and segfree take the length as a size_t
+
+nfront's libc.h has them take a usize, 64 bits on amd64 and arm64 (a
+segment of 4 GB or more: an APU's video memory); a ulong was 32 bits.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/plan9.rs | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/plan9.rs b/src/plan9.rs
+index 1e5bd700e548078effa4a28200b35c315e54d4e4..97f0fdf31c9256e9a0d8a16b0819d74bdc6d5386 100644
+--- a/src/plan9.rs
++++ b/src/plan9.rs
+@@ -335,12 +335,12 @@ extern "C" {
+         in_: c_int,
+     ) -> c_int;
+     #[link_name = "__p9_segattach"]
+-    pub fn segattach(attr: c_int, class: *const c_char, va: *mut c_void, len: ulong)
++    pub fn segattach(attr: c_int, class: *const c_char, va: *mut c_void, len: size_t)
+         -> *mut c_void;
+     #[link_name = "__p9_segdetach"]
+     pub fn segdetach(addr: *mut c_void) -> c_int;
+     #[link_name = "__p9_segfree"]
+-    pub fn segfree(va: *mut c_void, len: ulong) -> c_int;
++    pub fn segfree(va: *mut c_void, len: size_t) -> c_int;
+     #[link_name = "__p9_segbrk"]
+     pub fn segbrk(saddr: *mut c_void, addr: *mut c_void) -> *mut c_void;
+ 
