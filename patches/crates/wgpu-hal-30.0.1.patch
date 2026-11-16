@@ -107,7 +107,7 @@ diff -ruN a/src/vulkan/instance.rs b/src/vulkan/instance.rs
          let entry = unsafe {
              profiling::scope!("Load vk library");
              // ohos support is already fixed on ash main, but it's unclear when
-@@ -586,6 +641,20 @@
+@@ -586,6 +641,22 @@
          .map_err(|err| {
              crate::InstanceError::with_source(String::from("missing Vulkan entry points"), err)
          })?;
@@ -115,8 +115,10 @@ diff -ruN a/src/vulkan/instance.rs b/src/vulkan/instance.rs
 +        #[cfg(target_os = "plan9")]
 +        let entry = unsafe {
 +            // after wgpu-hal on the link line: a static library (C++: the
-+            // program links -lstdc++, and APE's libdraw for the plan9 WSI)
++            // program links -lstdc++, and APE's libdraw for the plan9 WSI),
++            // and APE's libz after it (Mesa's zlib is the tree's)
 +            #[link(name = "vulkan")]
++            #[link(name = "z")]
 +            unsafe extern "system" {
 +                fn vkGetInstanceProcAddr(
 +                    instance: vk::Instance,
@@ -128,7 +130,7 @@ diff -ruN a/src/vulkan/instance.rs b/src/vulkan/instance.rs
          let version = {
              profiling::scope!("vkEnumerateInstanceVersion");
              unsafe { entry.try_enumerate_instance_version() }
-@@ -906,6 +975,8 @@
+@@ -906,6 +977,8 @@
              (Rwh::Drm(handle), Rdh::Drm(display)) => {
                  self.create_surface_from_drm_plane(display.fd, handle.plane)
              }

@@ -107,7 +107,7 @@ diff -ruN a/src/vulkan/instance.rs b/src/vulkan/instance.rs
          let entry = unsafe {
              profiling::scope!("Load vk library");
              ash::Entry::load()
-@@ -579,6 +634,26 @@
+@@ -579,6 +634,28 @@
          .map_err(|err| {
              crate::InstanceError::with_source(String::from("missing Vulkan entry points"), err)
          })?;
@@ -115,9 +115,11 @@ diff -ruN a/src/vulkan/instance.rs b/src/vulkan/instance.rs
 +        #[cfg(target_os = "plan9")]
 +        let entry = unsafe {
 +            // after wgpu-hal on the link line: a static library, and what
-+            // it needs after it: APE's libdraw (the plan9 WSI) with lib9,
-+            // libfmt, libutf, and libstdc++ (Mesa's C++)
++            // it needs after it: APE's libz (Mesa's zlib is the tree's),
++            // APE's libdraw (the plan9 WSI) with lib9, libfmt, libutf, and
++            // libstdc++ (Mesa's C++)
 +            #[link(name = "vulkan")]
++            #[link(name = "z")]
 +            #[link(name = "draw")]
 +            #[link(name = "9")]
 +            #[link(name = "fmt")]
@@ -134,7 +136,7 @@ diff -ruN a/src/vulkan/instance.rs b/src/vulkan/instance.rs
          let version = {
              profiling::scope!("vkEnumerateInstanceVersion");
              unsafe { entry.try_enumerate_instance_version() }
-@@ -895,6 +970,8 @@
+@@ -895,6 +972,8 @@
                  let connection = display.connection.expect("Pointer to X-Server is not set.");
                  self.create_surface_from_xcb(connection.as_ptr(), handle.window.get())
              }
