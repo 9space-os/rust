@@ -7,7 +7,7 @@
 # objtype=386: i686-unknown-plan9's cargo in a 9pc guest (log cargo-guest.386.log).
 set -e
 TOP=$(cd "$(dirname "$0")/.." && pwd)
-. "$TOP/scripts/nfront-paths.sh"	# TREE, TREE_GCC, GCC_DIR, ... (the distribution's paths.env)
+. "$TOP/scripts/9space-paths.sh"	# TREE, TREE_GCC, GCC_DIR, ... (the distribution's paths.env)
 GCC9=${GCC9:-$GCC_DIR}
 # its build directory with the toolchain over gcc's APE (9front branch gcc)
 GCC9BUILD=${GCC9BUILD:-$GCC9/build}

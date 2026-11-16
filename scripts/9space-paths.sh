@@ -1,14 +1,14 @@
-# scripts/nfront-paths.sh: where nfront's parts are, for a repository
+# scripts/9space-paths.sh: where 9space's parts are, for a repository
 # beside the 9front tree (9front-gcc, 9front-rust, 9front-go, 9front-mcp).
 # Sourced after TOP (this repository) is set; exports each variable of the
 # distribution's paths.env (TREE, TREE_GCC, TREE_NIX, TREE_RISCV, GCC_DIR,
 # RUST_DIR, GO_DIR, ...) that the environment does not set already, as an
-# absolute path.  paths.env: $NFRONT_PATHS, else TOP/../dist/paths.env or TOP/../../dist/paths.env (the
+# absolute path.  paths.env: $NINESPACE_PATHS, else TOP/../dist/paths.env or TOP/../../dist/paths.env (the
 # umbrella's layout; ../../dist for the toolchains in toolchain/), else TOP/../9front-distribution/paths.env; without it
 # the old layout's ../9front-* names.  The same file in each repository.
-__nfront_paths(){
+__9space_paths(){
 	local f top line k v
-	for f in "$NFRONT_PATHS" "$TOP/../dist/paths.env" "$TOP/../../dist/paths.env" "$TOP/../9front-distribution/paths.env"; do
+	for f in "$NINESPACE_PATHS" "$TOP/../dist/paths.env" "$TOP/../../dist/paths.env" "$TOP/../9front-distribution/paths.env"; do
 		[ -n "$f" ] && [ -f "$f" ] && break
 		f=
 	done
@@ -28,4 +28,4 @@ __nfront_paths(){
 	: "${GO_DIR:=$top/9front-go}" "${MCP_DIR:=$top/9front-mcp}"
 	export TREE TREE_GCC TREE_NIX TREE_RISCV GCC_DIR RUST_DIR GO_DIR MCP_DIR
 }
-__nfront_paths
+__9space_paths

@@ -13,7 +13,7 @@
 # objtype=riscv64: riscv64gc-unknown-plan9 in the qemu virt guest of ../9front-riscv (PLAN9_RISCV).
 set -e
 TOP=$(cd "$(dirname "$0")/.." && pwd)
-. "$TOP/scripts/nfront-paths.sh"	# TREE, TREE_GCC, GCC_DIR, ... (the distribution's paths.env)
+. "$TOP/scripts/9space-paths.sh"	# TREE, TREE_GCC, GCC_DIR, ... (the distribution's paths.env)
 export PLAN9=${PLAN9:-$TREE}
 GCC9BUILD=${GCC9BUILD:-$GCC_DIR/build}
 case ${objtype:=amd64} in

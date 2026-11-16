@@ -9,7 +9,7 @@
 # into dl/crates/, checked against the sha256 of crates.io's index.
 set -e
 TOP=$(cd "$(dirname "$0")/.." && pwd)
-. "$TOP/scripts/nfront-paths.sh"	# TREE, TREE_GCC, GCC_DIR, ... (the distribution's paths.env)
+. "$TOP/scripts/9space-paths.sh"	# TREE, TREE_GCC, GCC_DIR, ... (the distribution's paths.env)
 P=$TOP/patches/crates
 REG=$(ls -d ~/.cargo/registry/src/*/ 2>/dev/null | head -1)
 # the published sources of crate $1 (name-version): their directory

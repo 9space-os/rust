@@ -4,8 +4,8 @@ Rust for 9front (Plan 9): the targets `x86_64-unknown-plan9`, `i686-unknown-plan
 `aarch64-unknown-plan9` (arm64) and `riscv64gc-unknown-plan9` (cross only), with std on 9front's own
 C library (as `libp9.a`, its names `__p9_*`), cross-compiled on Linux. C and C++ in crates
 are APE programs as any; APE is linked beside the native libc. Programs are linked by
-nfront's gcc (`GCC_DIR` of nfront's `dist/paths.env`, `toolchain/gcc`) as cross gcc (its `build/`)
-against nfront's 9front tree (`TREE`, `tree`, branch `main`; its tests take another
+9space's gcc (`GCC_DIR` of 9space's `dist/paths.env`, `toolchain/gcc`) as cross gcc (its `build/`)
+against 9space's 9front tree (`TREE`, `tree`, branch `main`; its tests take another
 with `PLAN9=`, e.g. a worktree of the branch `gcc`).
 
 Log of the port: `NOTES.md`.
@@ -34,7 +34,7 @@ Native Plan 9 calls go through the `libc` crate (its functions are bound to `__p
 
 ## Window system crates
 
-For Rust programs in windows of wsys or rio (nfront's ui plan): winit,
+For Rust programs in windows of wsys or rio (9space's ui plan): winit,
 raw-window-handle, softbuffer and wgpu with backends for 9front, on top of our
 own `plan9/p9win` (MIT, only std: the process's window through draw(3), readers
 of `/dev/mouse`, `/dev/kbd` and `/dev/wctl`, `/dev/cursor`, label, wctl,
@@ -83,7 +83,7 @@ the processor without a GPU, also without wgpu) uses that copy; its `scripts/rus
 
 ## Use
 
-    TOP=$PWD; . scripts/nfront-paths.sh          # GCC_DIR and the others from dist/paths.env
+    TOP=$PWD; . scripts/9space-paths.sh          # GCC_DIR and the others from dist/paths.env
     PATH=$GCC_DIR/build/amd64/cross/bin:$PATH
     rust/build/host/stage1/bin/rustc --edition 2024 --target x86_64-unknown-plan9 -O hello.rs
 
@@ -97,7 +97,7 @@ system, an optional install, as two archives with paths from `/`:
 - `out/$objtype/rust-tools-T.tgz`: rustdoc, rustfmt, cargo-fmt, clippy-driver,
   cargo-clippy, about 140 MB.
 
-On 9front, with nfront's gcc (`/$objtype/gnu`, from `GCC_DIR`) installed (rustc links with
+On 9front, with 9space's gcc (`/$objtype/gnu`, from `GCC_DIR`) installed (rustc links with
 its gcc):
 
     cd / && tar xzf rust-x86_64-unknown-plan9.tgz && tar xzf rust-tools-x86_64-unknown-plan9.tgz

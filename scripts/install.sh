@@ -18,7 +18,7 @@
 # usage: [objtype=386|arm64] scripts/install.sh [outdir]   (default out/$objtype)
 set -e
 TOP=$(cd "$(dirname "$0")/.." && pwd)
-. "$TOP/scripts/nfront-paths.sh"	# TREE, TREE_GCC, GCC_DIR, ... (the distribution's paths.env)
+. "$TOP/scripts/9space-paths.sh"	# TREE, TREE_GCC, GCC_DIR, ... (the distribution's paths.env)
 GCC9BUILD=${GCC9BUILD:-$GCC_DIR/build}
 case ${objtype:=amd64} in
 amd64)	T=x86_64-unknown-plan9 X=x86_64-pc-plan9 ;;

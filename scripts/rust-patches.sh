@@ -28,7 +28,7 @@ SUBDIRS=(src/tools/cargo library/backtrace src/llvm-project)
 die(){ echo "rust-patches: $*" >&2; exit 1; }
 # git am needs a committer; without a git identity (a new machine) a neutral one: the
 # branches are local, each commit keeps its author from the patch
-git config user.email >/dev/null 2>&1 || export GIT_COMMITTER_NAME=${GIT_COMMITTER_NAME:-nfront} GIT_COMMITTER_EMAIL=${GIT_COMMITTER_EMAIL:-nfront@localhost}
+git config user.email >/dev/null 2>&1 || export GIT_COMMITTER_NAME=${GIT_COMMITTER_NAME:-9space} GIT_COMMITTER_EMAIL=${GIT_COMMITTER_EMAIL:-9space@localhost}
 # git for a repository: rust's git data is rust.git beside rust/ (core.worktree=../rust):
 # Rust's bootstrap takes rust/ for a source archive only without rust/.git, and only so
 # finds its LLVM by the archive's git-commit-info
@@ -65,9 +65,9 @@ apply)
 		[ -d "$d/.git" ] || [ -d "$TOP/$repo.git" ] || die "$repo: no $repo/ (./fetch.sh)"
 		t=$(tag "$repo")
 		if g "$repo" rev-parse -q --verify plan9 >/dev/null; then
-			# plan9 as the last apply made it (refs/nfront/applied): no work of its own
+			# plan9 as the last apply made it (refs/9space/applied): no work of its own
 			# there, so the series (perhaps new from a pull) replaces it without a check
-			applied=$(g "$repo" rev-parse -q --verify refs/nfront/applied || true)
+			applied=$(g "$repo" rev-parse -q --verify refs/9space/applied || true)
 			if [ "$FORCE" != 1 ] && [ "$(g "$repo" rev-parse plan9)" != "$applied" ]; then
 				want=$(for r in "${parts[@]}"; do set -- $r; [ "$2" = "$repo" ] && cat "$P/$1"/*.patch; done | ids "$d")
 				have=$(g "$repo" log -p --reverse "$t..plan9" | ids "$d")
@@ -83,7 +83,7 @@ apply)
 			dirarg=(); [ "$3" = . ] || dirarg=(--directory="$3")
 			g "$repo" am -q --keep-cr "${dirarg[@]}" "$P/$1"/*.patch
 		done
-		g "$repo" update-ref refs/nfront/applied plan9
+		g "$repo" update-ref refs/9space/applied plan9
 		echo "$repo: plan9 $(g "$repo" rev-parse --short plan9) on $t"
 	done ;;
 *)	die "usage: rust-patches.sh diff|apply" ;;

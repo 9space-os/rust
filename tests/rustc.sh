@@ -8,7 +8,7 @@
 # PLAN9 (the system booted: its APE and libp9.a link the program; default ../9front-gccwt)
 set -e
 TOP=$(cd "$(dirname "$0")/.." && pwd)
-. "$TOP/scripts/nfront-paths.sh"	# TREE, TREE_GCC, GCC_DIR, ... (the distribution's paths.env)
+. "$TOP/scripts/9space-paths.sh"	# TREE, TREE_GCC, GCC_DIR, ... (the distribution's paths.env)
 export PLAN9=${PLAN9:-$TREE}
 GCC9=${GCC9:-$GCC_DIR}
 GCC9OUT=${GCC9OUT:-$GCC9/out}
