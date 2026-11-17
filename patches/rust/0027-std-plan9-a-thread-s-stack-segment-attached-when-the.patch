@@ -1,0 +1,133 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stefan Hertenberger <erde74@gmail.com>
+Date: Tue, 17 Nov 2026 08:31:23 +0100
+Subject: [PATCH 27/27] std: plan9: a thread's stack segment attached when the
+ thread is made, detached with its stack (the kernel shares segments within a
+ memory image)
+
+---
+ library/std/src/sys/pal/plan9/proc.rs | 64 +++++++++++++--------------
+ 1 file changed, 30 insertions(+), 34 deletions(-)
+
+diff --git a/library/std/src/sys/pal/plan9/proc.rs b/library/std/src/sys/pal/plan9/proc.rs
+index 30a9b7d1bcf1ec73f92dc6275ede615d3c98e01c..656e49ca279573f78ad3517f9d739768f70f2d01 100644
+--- a/library/std/src/sys/pal/plan9/proc.rs
++++ b/library/std/src/sys/pal/plan9/proc.rs
+@@ -18,11 +18,12 @@
+ //! A stack has an unmapped gap below it, so that an overflow faults: the kernel says
+ //! `suicide: sys: trap: fault ...` and leaves the proc Broken, as any program that
+ //! crashes, instead of the proc going on over its neighbour's memory. Plan 9 has no
+-//! mprotect: each stack is a segment of its own (`segattach`, class "memory", which
+-//! procs that share memory share), on addresses with gaps between them. A segment a proc
+-//! attaches later is its own, the others do not see it: the proc that runs `main`
+-//! attaches [`NSLOT`] of them before the first thread, at fixed places. A thread beyond
+-//! them, or one asking for more than [`SLOT`], gets a stack from malloc, without the gap.
++//! mprotect: each stack is a segment of its own (`segattach`, class "memory"), on
++//! addresses with gaps between them ([`NSLOT`] places): attached when a thread is made,
++//! detached when its stack is freed. The procs of a program are one memory image of
++//! 9space's kernel, which attaches and detaches a segment in all of them (segattach(2)).
++//! A thread beyond the places, or one asking for more than [`SLOT`], or one whose place
++//! another segment took, gets a stack from malloc, without the gap.
+ //!
+ //! Waiting is on 9front's semaphores (`semacquire`, `tsemacquire`): [`futex_wait`] and
+ //! [`futex_wake`] give std the futex it builds its locks on, a waiter per thread queued on
+@@ -665,9 +666,9 @@ fn set_privtop_here() {
+ 
+ /* stacks */
+ 
+-/// Stacks with a gap below, attached by `main`'s proc.
++/// Places of stacks with a gap below.
+ #[cfg(target_pointer_width = "64")]
+-pub const NSLOT: usize = 64;
++pub const NSLOT: usize = 1024;
+ /// Address space of one; its pages are made as they are touched.
+ #[cfg(target_pointer_width = "64")]
+ pub const SLOT: usize = 64 << 20;
+@@ -682,15 +683,14 @@ const NOSLOT: usize = usize::MAX;
+ 
+ /// Above the slots: slot i is [top - (i+1)*(SLOT+GAP), +SLOT)
+ static SLOT_TOP: AtomicUsize = AtomicUsize::new(0);
+-static NSLOTS: AtomicUsize = AtomicUsize::new(0);
+ static SLOT_USED: [AtomicBool; NSLOT] = [const { AtomicBool::new(false) }; NSLOT];
+ 
+ fn slot_va(i: usize) -> usize {
+     SLOT_TOP.load(Relaxed) - (i + 1) * (SLOT + GAP)
+ }
+ 
+-/// Only before the first thread: the others would not have them.
+-fn attach_slots() {
++/// Where the slots are, once, before the first thread.
++fn place_slots() {
+     let here = 0u8;
+     // a GiB below the stack segment, out of the way of the kernel's choice for
+     // segattach(…, 0, …), which goes down from there
+@@ -701,32 +701,28 @@ fn attach_slots() {
+     // here), which other processes' segments are attached in; the heap below
+     #[cfg(target_pointer_width = "32")]
+     let top = ((((&raw const here).addr() | ((16usize << 20) - 1)) / 2 + 1) & !((64usize << 20) - 1)) - (64usize << 20);
+-    SLOT_TOP.store(top, Relaxed);
+-    let mut n = 0;
+-    while n < NSLOT {
+-        let va = slot_va(n);
+-        let r = unsafe {
+-            libc::segattach(
+-                libc::SG_CEXEC,
+-                c"memory".as_ptr(),
+-                ptr::with_exposed_provenance_mut(va),
+-                SLOT,
+-            )
+-        };
+-        if r.addr() != va {
+-            break;
+-        }
+-        n += 1;
+-    }
+-    NSLOTS.store(n, Release);
++    SLOT_TOP.store(top, Release);
+ }
+ 
+ /// A stack of at least `size` bytes: (its slot or NOSLOT, the lowest address).
+ fn alloc_stack(size: usize) -> Option<(usize, *mut u8)> {
+-    if size <= SLOT {
+-        for i in 0..NSLOTS.load(Acquire) {
++    if size <= SLOT && SLOT_TOP.load(Acquire) != 0 {
++        for i in 0..NSLOT {
+             if SLOT_USED[i].compare_exchange(false, true, Acquire, Relaxed).is_ok() {
+-                return Some((i, ptr::with_exposed_provenance_mut(slot_va(i))));
++                let va = slot_va(i);
++                let r = unsafe {
++                    libc::segattach(
++                        libc::SG_CEXEC,
++                        c"memory".as_ptr(),
++                        ptr::with_exposed_provenance_mut(va),
++                        SLOT,
++                    )
++                };
++                if r.addr() == va {
++                    return Some((i, r.cast()));
++                }
++                // another segment there (one the kernel placed for an attach at 0,
++                // the heap): the place stays taken, the next one
+             }
+         }
+     }
+@@ -740,8 +736,8 @@ unsafe fn free_stack(slot: usize, stack: *mut u8) {
+         if slot == NOSLOT {
+             libc::free(stack.cast());
+         } else {
+-            // its pages go back; touched again, they are zero
+-            libc::segfree(stack.cast(), SLOT);
++            // in every proc of the program: the place is free again
++            libc::segdetach(stack.cast());
+             SLOT_USED[slot].store(false, Release);
+         }
+     }
+@@ -885,7 +881,7 @@ pub unsafe extern "C" fn __plan9_mainstack(
+     // below this frame (and runon's) the segment is not used again
+     set_privtop_here();
+     MAIN_PID.store(unsafe { libc::getpid() }, Relaxed);
+-    attach_slots();
++    place_slots();
+     let mut a = MainArgs { main, argc, argv, envp, ret: 0 };
+     unsafe {
+         match alloc_stack(MAIN_STACK) {

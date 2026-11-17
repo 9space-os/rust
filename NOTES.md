@@ -661,3 +661,11 @@ file locks), std/core/alloc test suites in the guest green except the TCP tests 
   kernel as 0. libc's `segattach`/`segfree` now take `size_t`, std's `proc.rs` passes `SLOT`
   as it is. After the std rebuild cargo kept crates built with the old std ("can't find crate
   for `ash`" in the tree's tests/gpu): scripts that run cargo call the tree's `cargostd`.
+- **Thread stacks attached when a thread is made (2026-11-17, the tree's group C):** 9space's
+  kernel now makes the procs of one `rfork(RFMEM)` family one memory image: a segment one of
+  them attaches or detaches is attached or detached in all (segattach(2)). std attached its 64
+  stack slots (16 on 386) up front only because a later segment stayed with the proc that
+  attached it. Now `alloc_stack` attaches a slot's segment when a thread is made and
+  `free_stack` detaches it (it was `segfree`); the slots are only places (`place_slots`), 1024 of
+  them on 64 bit. A place another segment took (one the kernel placed for an attach at 0, the
+  heap) stays taken; the thread then gets the next place, or a stack from malloc.
