@@ -83,7 +83,8 @@ pub struct Draw {
     data: Fd,
     buf: Vec<u8>,
     next: u32,
-    name: String,    // the window's, as /dev/winname said
+    dir: String,     // the window's directory: /dev, or a window's of wsys (win.rs)
+    name: String,    // the window's, as its winname said
     win: u32,        // its image id: 0 is the screen
     r: Rect,         // the window image's rectangle (with rio's border)
     border: i32,
@@ -93,7 +94,13 @@ pub struct Draw {
 }
 
 impl Draw {
+    /// the process's window (/dev/winname), or the screen without one
     pub fn open() -> io::Result<Draw> {
+        Draw::open_in("/dev")
+    }
+
+    /// the window whose directory is dir (Window::dir)
+    pub fn open_in(dir: &str) -> io::Result<Draw> {
         let ctl = Fd::open("/dev/draw/new", ORDWR)?;
         let mut b = [0u8; 12 * 12 + 1];
         let n = ctl.read(&mut b)?;
@@ -105,6 +112,7 @@ impl Draw {
             data,
             buf: Vec::with_capacity(MAXMSG),
             next: 16,
+            dir: dir.to_string(),
             name: String::new(),
             win: 0,
             r: screen,
@@ -180,10 +188,10 @@ impl Draw {
         // (a flush: harmless, it fails only there; ctl cannot tell, a new connection's
         // ctl is read once)
         if self.flush().is_err() {
-            *self = Draw::open()?;
+            *self = Draw::open_in(&self.dir.clone())?;
             return Ok(());
         }
-        let name = match Fd::open("/dev/winname", OREAD) {
+        let name = match Fd::open(&format!("{}/winname", self.dir), OREAD) {
             Ok(fd) => {
                 let mut b = [0u8; 256];
                 let n = fd.read(&mut b)?;
@@ -224,7 +232,8 @@ impl Draw {
         self.r = Rect::new(int(&f[4]), int(&f[5]), int(&f[6]), int(&f[7]));
         // rio's windows have a border; devdraw's screen (noborder.screen.N) has none;
         // at another scale than 1 (wsys' dpi) libdraw's scalesize(BORDERWIDTH)
-        self.border = if name.starts_with("noborder.") { 0 } else { scalesize(crate::dpi(), BORDERWIDTH) };
+        let dpi = std::fs::read_to_string(format!("{}/dpi", self.dir)).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(96);
+        self.border = if name.starts_with("noborder.") { 0 } else { scalesize(dpi, BORDERWIDTH) };
         self.name = name;
         Ok(())
     }

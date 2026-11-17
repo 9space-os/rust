@@ -35,7 +35,7 @@ diff -ruN a/src/backends/mod.rs b/src/backends/mod.rs
 diff -ruN a/src/backends/plan9.rs b/src/backends/plan9.rs
 --- a/src/backends/plan9.rs
 +++ b/src/backends/plan9.rs
-@@ -0,0 +1,143 @@
+@@ -0,0 +1,145 @@
 +//! 9front: softbuffer's plan9 backend. The pixels (0x00RRGGBB, draw(3)'s
 +//! x8r8g8b8 in memory) go to the process's window of wsys or rio (the screen
 +//! without either) through a draw(3) connection of the surface's own
@@ -74,10 +74,12 @@ diff -ruN a/src/backends/plan9.rs b/src/backends/plan9.rs
 +
 +    fn new(window: W, _display: &D) -> Result<Self, InitError<W>> {
 +        let raw = window.window_handle()?.as_raw();
-+        let RawWindowHandle::Plan9(_) = raw else {
++        let RawWindowHandle::Plan9(h) = raw else {
 +            return Err(InitError::Unsupported(window));
 +        };
-+        let draw = Draw::open().map_err(|e| {
++        // the process's window (0), or wsys' window n of the process
++        let dir = if h.window == 0 { "/dev".to_string() } else { format!("/dev/wsys/{}", h.window) };
++        let draw = Draw::open_in(&dir).map_err(|e| {
 +            SoftBufferError::PlatformError(Some("plan9: draw(3)".into()), Some(Box::new(e)))
 +        })?;
 +        Ok(Self {

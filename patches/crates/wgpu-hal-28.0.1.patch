@@ -46,7 +46,7 @@ diff -ruN a/src/vulkan/instance.rs b/src/vulkan/instance.rs
          if cfg!(target_os = "macos") {
              // VK_EXT_metal_surface
              extensions.push(ext::metal_surface::NAME);
-@@ -389,6 +397,52 @@
+@@ -389,6 +397,56 @@
          })
      }
  
@@ -54,13 +54,15 @@ diff -ruN a/src/vulkan/instance.rs b/src/vulkan/instance.rs
 +    /// without either): the extension's function by name, its struct by hand
 +    /// (ash has no VK_PLAN9_surface)
 +    #[cfg(target_os = "plan9")]
-+    fn create_surface_plan9(&self) -> Result<super::Surface, crate::InstanceError> {
++    fn create_surface_plan9(&self, window: u32) -> Result<super::Surface, crate::InstanceError> {
 +        #[repr(C)]
 +        struct Plan9SurfaceCreateInfo {
 +            s_type: vk::StructureType,
 +            p_next: *const c_void,
 +            flags: vk::Flags,
-+            p_window_name: *const core::ffi::c_char, // null: /dev/winname, else the screen
++            // null: the process's window (/dev/winname); a path: wsys' window
++            // directory of another window of the process (/dev/wsys/n)
++            p_window_name: *const core::ffi::c_char,
 +        }
 +        type CreatePlan9Surface = unsafe extern "system" fn(
 +            vk::Instance,
@@ -82,11 +84,13 @@ diff -ruN a/src/vulkan/instance.rs b/src/vulkan/instance.rs
 +        }
 +        .ok_or_else(|| crate::InstanceError::new(String::from("no vkCreatePlan9SurfacePLAN9")))?;
 +        let create: CreatePlan9Surface = unsafe { core::mem::transmute(f) };
++        // (copied by the driver: vkCreatePlan9SurfacePLAN9 keeps the name)
++        let dir = alloc::ffi::CString::new(alloc::format!("/dev/wsys/{window}")).unwrap();
 +        let info = Plan9SurfaceCreateInfo {
 +            s_type: vk::StructureType::from_raw(1008999000),
 +            p_next: core::ptr::null(),
 +            flags: 0,
-+            p_window_name: core::ptr::null(),
++            p_window_name: if window == 0 { core::ptr::null() } else { dir.as_ptr() },
 +        };
 +        let mut surface = vk::SurfaceKHR::null();
 +        let r = unsafe { create(instance, &info, core::ptr::null(), &mut surface) };
@@ -99,7 +103,7 @@ diff -ruN a/src/vulkan/instance.rs b/src/vulkan/instance.rs
      fn create_surface_from_xlib(
          &self,
          dpy: *mut vk::Display,
-@@ -572,6 +626,7 @@
+@@ -572,6 +630,7 @@
      ) -> Result<Self, crate::InstanceError> {
          profiling::scope!("Init Vulkan Backend");
  
@@ -107,7 +111,7 @@ diff -ruN a/src/vulkan/instance.rs b/src/vulkan/instance.rs
          let entry = unsafe {
              profiling::scope!("Load vk library");
              ash::Entry::load()
-@@ -579,6 +634,28 @@
+@@ -579,6 +638,28 @@
          .map_err(|err| {
              crate::InstanceError::with_source(String::from("missing Vulkan entry points"), err)
          })?;
@@ -136,12 +140,12 @@ diff -ruN a/src/vulkan/instance.rs b/src/vulkan/instance.rs
          let version = {
              profiling::scope!("vkEnumerateInstanceVersion");
              unsafe { entry.try_enumerate_instance_version() }
-@@ -895,6 +972,8 @@
+@@ -895,6 +976,8 @@
                  let connection = display.connection.expect("Pointer to X-Server is not set.");
                  self.create_surface_from_xcb(connection.as_ptr(), handle.window.get())
              }
 +            #[cfg(target_os = "plan9")]
-+            (Rwh::Plan9(_), _) => self.create_surface_plan9(), // 9front
++            (Rwh::Plan9(h), _) => self.create_surface_plan9(h.window), // 9front
              (Rwh::AndroidNdk(handle), _) => {
                  self.create_surface_android(handle.a_native_window.as_ptr())
              }

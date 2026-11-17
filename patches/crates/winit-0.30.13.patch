@@ -36,7 +36,16 @@ diff -ruN a/src/event.rs b/src/event.rs
 diff -ruN a/src/platform/mod.rs b/src/platform/mod.rs
 --- a/src/platform/mod.rs
 +++ b/src/platform/mod.rs
-@@ -27,6 +27,7 @@
+@@ -20,6 +20,8 @@
+ pub mod windows;
+ #[cfg(any(x11_platform, docsrs))]
+ pub mod x11;
++#[cfg(any(plan9_platform, docsrs))]
++pub mod plan9; // 9front
+ 
+ #[cfg(any(
+     windows_platform,
+@@ -27,6 +29,7 @@
      android_platform,
      x11_platform,
      wayland_platform,
@@ -44,7 +53,7 @@ diff -ruN a/src/platform/mod.rs b/src/platform/mod.rs
      docsrs,
  ))]
  pub mod run_on_demand;
-@@ -37,6 +38,7 @@
+@@ -37,6 +40,7 @@
      android_platform,
      x11_platform,
      wayland_platform,
@@ -52,7 +61,7 @@ diff -ruN a/src/platform/mod.rs b/src/platform/mod.rs
      docsrs,
  ))]
  pub mod pump_events;
-@@ -47,6 +49,7 @@
+@@ -47,6 +51,7 @@
      x11_platform,
      wayland_platform,
      orbital_platform,
@@ -60,6 +69,45 @@ diff -ruN a/src/platform/mod.rs b/src/platform/mod.rs
      docsrs
  ))]
  pub mod modifier_supplement;
+diff -ruN a/src/platform/plan9.rs b/src/platform/plan9.rs
+--- a/src/platform/plan9.rs
++++ b/src/platform/plan9.rs
+@@ -0,0 +1,35 @@
++//! 9front: what only wsys(4) does with a program's windows.
++//!
++//! A process has its window (the one its name space's `/dev` is); under wsys
++//! it may have more: `Window`s made after the first are windows of their own
++//! (wsys' `clone`), dialogs of their parent window
++//! (`WindowAttributes::with_parent_window`), or popups without decorations
++//! (`with_decorations(false)`: menus, tooltips).
++
++use crate::window::{Window, WindowAttributes};
++
++/// window attributes only wsys knows
++pub trait WindowAttributesExtPlan9 {
++    /// a dialog that takes its parent's clicks while it is shown (wsys' modal):
++    /// a click on the parent brings it up instead
++    fn with_modal(self, modal: bool) -> Self;
++}
++
++impl WindowAttributesExtPlan9 for WindowAttributes {
++    fn with_modal(mut self, modal: bool) -> Self {
++        self.platform_specific.modal = modal;
++        self
++    }
++}
++
++/// what wsys says of a window
++pub trait WindowExtPlan9 {
++    /// its number in wsys (0: the process's window, or none: rio)
++    fn wsys_window(&self) -> u32;
++}
++
++impl WindowExtPlan9 for Window {
++    fn wsys_window(&self) -> u32 {
++        self.window.maybe_wait_on_main(|w| w.wsys_window())
++    }
++}
 diff -ruN a/src/platform_impl/mod.rs b/src/platform_impl/mod.rs
 --- a/src/platform_impl/mod.rs
 +++ b/src/platform_impl/mod.rs
@@ -91,14 +139,16 @@ diff -ruN a/src/platform_impl/mod.rs b/src/platform_impl/mod.rs
 diff -ruN a/src/platform_impl/plan9/event_loop.rs b/src/platform_impl/plan9/event_loop.rs
 --- a/src/platform_impl/plan9/event_loop.rs
 +++ b/src/platform_impl/plan9/event_loop.rs
-@@ -0,0 +1,816 @@
+@@ -0,0 +1,847 @@
 +//! 9front: the event loop of winit's plan9 backend. The readers of p9win
-+//! (threads) put what they read into a queue; the loop takes it out and makes
-+//! winit's events of it, and waits on the queue (a condition variable) for
-+//! more, for a user event, a redraw or the time.
++//! (threads, each window's) put what they read into a queue, with the
++//! window's id; the loop takes it out and makes winit's events of it, and
++//! waits on the queue (a condition variable) for more, for a user event, a
++//! redraw or the time. The first window is the process's (its namespace's
++//! /dev); under wsys more are made through its clone file (window.rs).
 +
 +use std::cell::Cell;
-+use std::collections::VecDeque;
++use std::collections::{HashMap, VecDeque};
 +use std::marker::PhantomData;
 +use std::sync::atomic::{AtomicBool, Ordering};
 +use std::sync::{mpsc, Arc, Condvar, Mutex};
@@ -132,22 +182,32 @@ diff -ruN a/src/platform_impl/plan9/event_loop.rs b/src/platform_impl/plan9/even
 +/// key, then the character as a message of its own)
 +const CHARWAIT: Duration = Duration::from_millis(30);
 +
-+pub(super) const THE_WINDOW: WindowId = WindowId(1);
-+
-+/// what the readers and the window put in for the loop
++/// what the readers and the windows put in for the loop, by window
 +#[derive(Default)]
 +pub(super) struct Queue {
-+    pub inputs: VecDeque<Input>,
++    pub inputs: VecDeque<(WindowId, Input)>,
 +    pub wake: bool,
-+    pub redraw: bool,
-+    pub created: bool,
-+    pub destroyed: bool,
++    pub redraw: Vec<WindowId>,
++    pub created: Vec<WindowId>,
++    pub destroyed: Vec<WindowId>,
++}
++
++impl Queue {
++    pub fn redraw(&mut self, id: WindowId) {
++        if !self.redraw.contains(&id) {
++            self.redraw.push(id);
++        }
++    }
++
++    fn idle(&self) -> bool {
++        self.inputs.is_empty() && !self.wake && self.redraw.is_empty() && self.created.is_empty() && self.destroyed.is_empty()
++    }
 +}
 +
 +pub(super) struct Shared {
 +    pub queue: Mutex<Queue>,
 +    pub cv: Condvar,
-+    pub win: Mutex<Option<Arc<WinState>>>,
++    pub wins: Mutex<HashMap<WindowId, Arc<WinState>>>,
 +}
 +
 +impl Shared {
@@ -166,6 +226,9 @@ diff -ruN a/src/platform_impl/plan9/event_loop.rs b/src/platform_impl/plan9/even
 +}
 +
 +pub(super) struct WinState {
++    pub id: WindowId,
++    /// the window in wsys (or the process's): its directory, its clone file
++    pub win: p9win::Window,
 +    pub draw: Mutex<Draw>,
 +    pub inputs: Inputs,
 +    pub content: Mutex<Rect>,
@@ -188,12 +251,13 @@ diff -ruN a/src/platform_impl/plan9/event_loop.rs b/src/platform_impl/plan9/even
 +impl WinState {
 +    /// the cursor shown now: none, the program's, the arrow
 +    pub fn show_cursor(&self) {
++        let dir = self.win.dir();
 +        let r = if !self.cursor_visible.load(Ordering::Relaxed) {
-+            p9win::cursor::set(Some(&p9win::cursor::HIDDEN))
++            p9win::cursor::set_in(dir, Some(&p9win::cursor::HIDDEN))
 +        } else {
 +            match &*self.cursor.lock().unwrap() {
-+                CursorShape::Arrow => p9win::cursor::set(None),
-+                CursorShape::Shape(c) => p9win::cursor::set(Some(c)),
++                CursorShape::Arrow => p9win::cursor::set_in(dir, None),
++                CursorShape::Shape(c) => p9win::cursor::set_in(dir, Some(c)),
 +            }
 +        };
 +        if let Err(e) = r {
@@ -209,7 +273,7 @@ diff -ruN a/src/platform_impl/plan9/event_loop.rs b/src/platform_impl/plan9/even
 +        }
 +        let c = d.content();
 +        *self.content.lock().unwrap() = c;
-+        *self.scale.lock().unwrap() = p9win::scale();
++        *self.scale.lock().unwrap() = self.win.dpi() as f64 / 96.0;
 +        c
 +    }
 +}
@@ -366,19 +430,20 @@ diff -ruN a/src/platform_impl/plan9/event_loop.rs b/src/platform_impl/plan9/even
 +    window_target: event_loop::ActiveEventLoop,
 +    user_events_sender: mpsc::Sender<T>,
 +    user_events_receiver: mpsc::Receiver<T>,
-+    st: State,
++    st: HashMap<WindowId, State>,
 +    start_cause: StartCause,
 +    started: bool, // pump_events: Init sent
 +}
 +
 +type Handler<'a, T> = dyn FnMut(event::Event<T>) + 'a;
 +
-+fn window_event<T>(h: &mut Handler<'_, T>, e: event::WindowEvent) {
-+    h(event::Event::WindowEvent { window_id: RootWindowId(THE_WINDOW), event: e });
++fn window_event<T>(h: &mut Handler<'_, T>, id: WindowId, e: event::WindowEvent) {
++    h(event::Event::WindowEvent { window_id: RootWindowId(id), event: e });
 +}
 +
 +fn key_event<T>(
 +    h: &mut Handler<'_, T>,
++    id: WindowId,
 +    base: char,
 +    pressed: bool,
 +    typed: Option<char>,
@@ -402,7 +467,7 @@ diff -ruN a/src/platform_impl/plan9/event_loop.rs b/src/platform_impl/plan9/even
 +        Some(NamedKey::Tab) if pressed => Some(SmolStr::new("\t")),
 +        _ => text,
 +    };
-+    window_event(h, event::WindowEvent::KeyboardInput {
++    window_event(h, id, event::WindowEvent::KeyboardInput {
 +        device_id: event::DeviceId(DeviceId),
 +        event: event::KeyEvent {
 +            logical_key,
@@ -431,14 +496,14 @@ diff -ruN a/src/platform_impl/plan9/event_loop.rs b/src/platform_impl/plan9/even
 +                    shared: Arc::new(Shared {
 +                        queue: Mutex::new(Queue::default()),
 +                        cv: Condvar::new(),
-+                        win: Mutex::new(None),
++                        wins: Mutex::new(HashMap::new()),
 +                    }),
 +                },
 +                _marker: PhantomData,
 +            },
 +            user_events_sender,
 +            user_events_receiver,
-+            st: State::default(),
++            st: HashMap::new(),
 +            start_cause: StartCause::Init,
 +            started: false,
 +        })
@@ -457,32 +522,32 @@ diff -ruN a/src/platform_impl/plan9/event_loop.rs b/src/platform_impl/plan9/even
 +        if scale != st.scale {
 +            st.scale = scale;
 +            let size = Arc::new(Mutex::new(PhysicalSize::new(c.dx().max(0) as u32, c.dy().max(0) as u32)));
-+            window_event(h, event::WindowEvent::ScaleFactorChanged {
++            window_event(h, win.id, event::WindowEvent::ScaleFactorChanged {
 +                scale_factor: scale,
 +                inner_size_writer: event::InnerSizeWriter::new(Arc::downgrade(&size)),
 +            });
 +        }
 +        if c.dx() != old.dx() || c.dy() != old.dy() {
-+            window_event(h, event::WindowEvent::Resized(
++            window_event(h, win.id, event::WindowEvent::Resized(
 +                (c.dx().max(0) as u32, c.dy().max(0) as u32).into(),
 +            ));
 +        }
 +        if let Some((theme, text)) = super::window::desktop_theme() {
 +            if st.theme.as_deref().is_some_and(|t| t != text) {
-+                window_event(h, event::WindowEvent::ThemeChanged(theme));
++                window_event(h, win.id, event::WindowEvent::ThemeChanged(theme));
 +            }
 +            st.theme = Some(text);
 +        }
-+        shared.poke(|q| q.redraw = true);
++        shared.poke(|q| q.redraw(win.id));
 +        if c.x0 != old.x0 || c.y0 != old.y0 {
-+            window_event(h, event::WindowEvent::Moved((c.x0, c.y0).into()));
++            window_event(h, win.id, event::WindowEvent::Moved((c.x0, c.y0).into()));
 +        }
 +    }
 +
 +    /// the key press that waited for its character, without one
-+    fn flush_pending(st: &mut State, h: &mut Handler<'_, T>) {
++    fn flush_pending(id: WindowId, st: &mut State, h: &mut Handler<'_, T>) {
 +        if let Some((key, _)) = st.pending.take() {
-+            key_event(h, key, true, None, false);
++            key_event(h, id, key, true, None, false);
 +        }
 +    }
 +
@@ -494,7 +559,7 @@ diff -ruN a/src/platform_impl/plan9/event_loop.rs b/src/platform_impl/plan9/even
 +        shared: &Shared,
 +    ) {
 +        if !matches!(input, Input::Char(_)) {
-+            Self::flush_pending(st, h);
++            Self::flush_pending(win.id, st, h);
 +        }
 +        match input {
 +            Input::Mouse { x, y, buttons, resized } => {
@@ -506,7 +571,7 @@ diff -ruN a/src/platform_impl/plan9/event_loop.rs b/src/platform_impl/plan9/even
 +                if inside != st.inside {
 +                    st.inside = inside;
 +                    let device_id = event::DeviceId(DeviceId);
-+                    window_event(h, if inside {
++                    window_event(h, win.id, if inside {
 +                        event::WindowEvent::CursorEntered { device_id }
 +                    } else {
 +                        event::WindowEvent::CursorLeft { device_id }
@@ -535,7 +600,7 @@ diff -ruN a/src/platform_impl/plan9/event_loop.rs b/src/platform_impl/plan9/even
 +                        });
 +                    }
 +                    st.last = Some((x, y));
-+                    window_event(h, event::WindowEvent::CursorMoved {
++                    window_event(h, win.id, event::WindowEvent::CursorMoved {
 +                        device_id: event::DeviceId(DeviceId),
 +                        position: ((x - c.x0) as f64, (y - c.y0) as f64).into(),
 +                    });
@@ -547,7 +612,7 @@ diff -ruN a/src/platform_impl/plan9/event_loop.rs b/src/platform_impl/plan9/even
 +                    (4, event::MouseButton::Right),
 +                ] {
 +                    if changed & bit != 0 {
-+                        window_event(h, event::WindowEvent::MouseInput {
++                        window_event(h, win.id, event::WindowEvent::MouseInput {
 +                            device_id: event::DeviceId(DeviceId),
 +                            state: element_state(buttons & bit != 0),
 +                            button,
@@ -557,7 +622,7 @@ diff -ruN a/src/platform_impl/plan9/event_loop.rs b/src/platform_impl/plan9/even
 +                // buttons 4 and 5: the wheel, one step each press
 +                for (bit, dy) in [(8, 1.0), (16, -1.0)] {
 +                    if changed & bit != 0 && buttons & bit != 0 {
-+                        window_event(h, event::WindowEvent::MouseWheel {
++                        window_event(h, win.id, event::WindowEvent::MouseWheel {
 +                            device_id: event::DeviceId(DeviceId),
 +                            delta: event::MouseScrollDelta::LineDelta(0.0, dy),
 +                            phase: event::TouchPhase::Moved,
@@ -570,7 +635,7 @@ diff -ruN a/src/platform_impl/plan9/event_loop.rs b/src/platform_impl/plan9/even
 +                let mods = st.modifiers();
 +                let old = std::mem::take(&mut st.keys);
 +                for &key in old.iter().filter(|key| !now.contains(key)) {
-+                    key_event(h, key, false, None, false);
++                    key_event(h, win.id, key, false, None, false);
 +                    if st.held == Some(key) {
 +                        st.held = None;
 +                    }
@@ -579,29 +644,29 @@ diff -ruN a/src/platform_impl/plan9/event_loop.rs b/src/platform_impl/plan9/even
 +                for &key in now.iter().filter(|key| !old.contains(key)) {
 +                    st.keys.push(key);
 +                    if types(key) {
-+                        Self::flush_pending(st, h);
++                        Self::flush_pending(win.id, st, h);
 +                        st.pending = Some((key, Instant::now()));
 +                        st.held = Some(key);
 +                    } else {
-+                        key_event(h, key, true, None, false);
++                        key_event(h, win.id, key, true, None, false);
 +                    }
 +                }
 +                let m = st.modifiers();
 +                if m != mods {
-+                    window_event(h, event::WindowEvent::ModifiersChanged(m));
++                    window_event(h, win.id, event::WindowEvent::ModifiersChanged(m));
 +                }
 +            },
 +            Input::Char(c) => {
 +                if let Some((key, _)) = st.pending.take() {
-+                    key_event(h, key, true, Some(c), false);
++                    key_event(h, win.id, key, true, Some(c), false);
 +                } else if let Some(key) = st.held {
 +                    // a key held down: kbdfs repeats its character
-+                    key_event(h, key, true, Some(c), true);
++                    key_event(h, win.id, key, true, Some(c), true);
 +                } else if text(c) {
 +                    // composed (kbdfs' Alt sequences): a character without a key of its own
 +                    let s: SmolStr = c.encode_utf8(&mut [0u8; 4]).into();
 +                    for pressed in [true, false] {
-+                        window_event(h, event::WindowEvent::KeyboardInput {
++                        window_event(h, win.id, event::WindowEvent::KeyboardInput {
 +                            device_id: event::DeviceId(DeviceId),
 +                            event: event::KeyEvent {
 +                                logical_key: Key::Character(s.clone()),
@@ -625,8 +690,8 @@ diff -ruN a/src/platform_impl/plan9/event_loop.rs b/src/platform_impl/plan9/even
 +                } else if keycode(c).1.is_some() {
 +                    // a key's character without the key (written to /dev/kbdin:
 +                    // vncs, a test): Enter, Tab, Backspace, ... pressed and let go
-+                    key_event(h, c, true, Some(c), false);
-+                    key_event(h, c, false, None, false);
++                    key_event(h, win.id, c, true, Some(c), false);
++                    key_event(h, win.id, c, false, None, false);
 +                }
 +            },
 +            Input::Wctl(line) => {
@@ -634,16 +699,16 @@ diff -ruN a/src/platform_impl/plan9/event_loop.rs b/src/platform_impl/plan9/even
 +                Self::relook(win, st, h, shared);
 +                let focused = line.contains("current") && !line.contains("notcurrent");
 +                if focused != win.focused.swap(focused, Ordering::Relaxed) {
-+                    window_event(h, event::WindowEvent::Focused(focused));
++                    window_event(h, win.id, event::WindowEvent::Focused(focused));
 +                }
 +                let hidden = line.contains("hidden");
 +                if hidden != win.hidden.swap(hidden, Ordering::Relaxed)
 +                    && !win.invisible.load(Ordering::Relaxed)
 +                {
-+                    window_event(h, event::WindowEvent::Occluded(hidden));
++                    window_event(h, win.id, event::WindowEvent::Occluded(hidden));
 +                }
 +            },
-+            Input::Closed => window_event(h, event::WindowEvent::CloseRequested),
++            Input::Closed | Input::CloseRequested => window_event(h, win.id, event::WindowEvent::CloseRequested),
 +        }
 +    }
 +
@@ -715,30 +780,41 @@ diff -ruN a/src/platform_impl/plan9/event_loop.rs b/src/platform_impl/plan9/even
 +                std::mem::take(&mut q.destroyed),
 +            )
 +        };
-+        let win = shared.win.lock().unwrap().clone();
-+        if let Some(win) = &win {
-+            if created {
-+                // the first size and place
-+                *st = State::default();
-+                st.content = *win.content.lock().unwrap();
-+                st.scale = *win.scale.lock().unwrap();
-+                let c = st.content;
-+                window_event(&mut h, event::WindowEvent::Resized(
-+                    (c.dx().max(0) as u32, c.dy().max(0) as u32).into(),
-+                ));
-+                window_event(&mut h, event::WindowEvent::Moved((c.x0, c.y0).into()));
-+                window_event(&mut h, event::WindowEvent::Focused(true));
-+            }
-+            for input in inputs {
-+                Self::input(win, st, input, &mut h, &shared);
-+            }
-+            if matches!(st.pending, Some((_, t)) if t.elapsed() >= CHARWAIT) {
-+                Self::flush_pending(st, &mut h);
++        // each window looked up when it is wanted, not held over the round: one
++        // the program drops goes then (its clone file closed), not after
++        let lookup = |id: &WindowId| shared.wins.lock().unwrap().get(id).cloned();
++        for id in created {
++            let Some(win) = lookup(&id) else { continue };
++            // the first size and place
++            let mut ws = State::default();
++            ws.content = *win.content.lock().unwrap();
++            ws.scale = *win.scale.lock().unwrap();
++            let c = ws.content;
++            st.insert(id, ws);
++            window_event(&mut h, id, event::WindowEvent::Resized(
++                (c.dx().max(0) as u32, c.dy().max(0) as u32).into(),
++            ));
++            window_event(&mut h, id, event::WindowEvent::Moved((c.x0, c.y0).into()));
++            if win.focused.load(Ordering::Relaxed) {
++                window_event(&mut h, id, event::WindowEvent::Focused(true));
 +            }
 +        }
-+        if destroyed {
-+            window_event(&mut h, event::WindowEvent::Destroyed);
-+            *shared.win.lock().unwrap() = None;
++        for (id, input) in inputs {
++            // (what a window's readers said after it was dropped: nobody's)
++            if let (Some(win), Some(ws)) = (lookup(&id), st.get_mut(&id)) {
++                Self::input(&win, ws, input, &mut h, &shared);
++            }
++        }
++        for (id, ws) in st.iter_mut() {
++            if matches!(ws.pending, Some((_, t)) if t.elapsed() >= CHARWAIT) {
++                Self::flush_pending(*id, ws, &mut h);
++            }
++        }
++        for id in destroyed {
++            if st.remove(&id).is_some() {
++                window_event(&mut h, id, event::WindowEvent::Destroyed);
++            }
++            shared.wins.lock().unwrap().remove(&id);
 +        }
 +
 +        while let Ok(event) = self.user_events_receiver.try_recv() {
@@ -746,8 +822,10 @@ diff -ruN a/src/platform_impl/plan9/event_loop.rs b/src/platform_impl/plan9/even
 +        }
 +
 +        let redraw = std::mem::take(&mut shared.queue.lock().unwrap().redraw);
-+        if redraw && shared.win.lock().unwrap().is_some() {
-+            window_event(&mut h, event::WindowEvent::RedrawRequested);
++        for id in redraw {
++            if shared.wins.lock().unwrap().contains_key(&id) {
++                window_event(&mut h, id, event::WindowEvent::RedrawRequested);
++            }
 +        }
 +
 +        h(event::Event::AboutToWait);
@@ -767,8 +845,9 @@ diff -ruN a/src/platform_impl/plan9/event_loop.rs b/src/platform_impl/plan9/even
 +            ControlFlow::WaitUntil(instant) => Some(instant),
 +        };
 +        // a key press waiting for its character: not longer than that
-+        let mut until = match (requested_resume, self.st.pending) {
-+            (r, Some((_, t))) => Some(r.map_or(t + CHARWAIT, |r| r.min(t + CHARWAIT))),
++        let pending = self.st.values().filter_map(|w| w.pending.map(|(_, t)| t)).min();
++        let mut until = match (requested_resume, pending) {
++            (r, Some(t)) => Some(r.map_or(t + CHARWAIT, |r| r.min(t + CHARWAIT))),
 +            (r, None) => r,
 +        };
 +        if let Some(l) = limit.and_then(|l| start.checked_add(l)) {
@@ -777,7 +856,7 @@ diff -ruN a/src/platform_impl/plan9/event_loop.rs b/src/platform_impl/plan9/even
 +
 +        let mut q = shared.queue.lock().unwrap();
 +        let mut timed_out = false;
-+        while q.inputs.is_empty() && !q.wake && !q.redraw && !q.created && !q.destroyed {
++        while q.idle() {
 +            match until {
 +                None => q = shared.cv.wait(q).unwrap(),
 +                Some(until) => {
@@ -911,7 +990,7 @@ diff -ruN a/src/platform_impl/plan9/event_loop.rs b/src/platform_impl/plan9/even
 diff -ruN a/src/platform_impl/plan9/mod.rs b/src/platform_impl/plan9/mod.rs
 --- a/src/platform_impl/plan9/mod.rs
 +++ b/src/platform_impl/plan9/mod.rs
-@@ -0,0 +1,159 @@
+@@ -0,0 +1,166 @@
 +//! 9front: winit's plan9 backend (target_os = "plan9"): the process's window
 +//! of wsys or rio, the screen without either, through p9win
 +//! (../9front-rust/plan9/p9win): draw(3) for its place, /dev/mouse, /dev/kbd and
@@ -968,8 +1047,15 @@ diff -ruN a/src/platform_impl/plan9/mod.rs b/src/platform_impl/plan9/mod.rs
 +    }
 +}
 +
++/// what platform::plan9's WindowAttributesExtPlan9 sets
 +#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-+pub struct PlatformSpecificWindowAttributes;
++pub struct PlatformSpecificWindowAttributes {
++    /// a dialog of its parent window that takes the parent's clicks (wsys' modal)
++    pub modal: bool,
++    /// the user's close only asks (CloseRequested), the program closes it
++    /// (wsys' askclose); the default for windows other than the process's
++    pub ask_close: Option<bool>,
++}
 +
 +#[derive(Clone, Debug)]
 +pub struct OsError(Arc<std::io::Error>);
@@ -1074,11 +1160,13 @@ diff -ruN a/src/platform_impl/plan9/mod.rs b/src/platform_impl/plan9/mod.rs
 diff -ruN a/src/platform_impl/plan9/window.rs b/src/platform_impl/plan9/window.rs
 --- a/src/platform_impl/plan9/window.rs
 +++ b/src/platform_impl/plan9/window.rs
-@@ -0,0 +1,510 @@
-+//! 9front: the window of winit's plan9 backend, the process's window of wsys
-+//! or rio (the screen without either). Size, place and hiding go to
-+//! /dev/wctl (rio(4)); the window system's answer comes back as a change the
-+//! readers see (/dev/mouse's r, a line of /dev/wctl).
+@@ -0,0 +1,585 @@
++//! 9front: the windows of winit's plan9 backend. The first is the process's
++//! window of wsys or rio (the screen without either); under wsys more are
++//! made through its clone file (p9win::Window): windows of their own,
++//! dialogs of a parent window, popups without decorations. Size, place and
++//! hiding go to the window's wctl (rio(4)); the window system's answer comes
++//! back as a change the readers see (its mouse's r, a line of its wctl).
 +
 +use std::collections::VecDeque;
 +use std::sync::atomic::{AtomicBool, Ordering};
@@ -1086,7 +1174,7 @@ diff -ruN a/src/platform_impl/plan9/window.rs b/src/platform_impl/plan9/window.r
 +
 +use p9win::cursor::{self, Shape};
 +use p9win::draw::{Draw, Rect};
-+use p9win::Inputs;
++use p9win::{Inputs, Role};
 +
 +use crate::cursor::Cursor;
 +use crate::dpi::{PhysicalPosition, PhysicalSize, Position, Size};
@@ -1094,7 +1182,7 @@ diff -ruN a/src/platform_impl/plan9/window.rs b/src/platform_impl/plan9/window.r
 +use crate::window::{CursorGrabMode, CursorIcon, ImePurpose};
 +use crate::{error, window};
 +
-+use super::event_loop::{CursorShape, Shared, WinState, THE_WINDOW};
++use super::event_loop::{CursorShape, Shared, WinState};
 +use super::{ActiveEventLoop, MonitorHandle, OsError, WindowId};
 +
 +pub struct Window {
@@ -1106,8 +1194,8 @@ diff -ruN a/src/platform_impl/plan9/window.rs b/src/platform_impl/plan9/window.r
 +    os_error!(OsError::new(e))
 +}
 +
-+fn wctl(msg: &str) {
-+    if let Err(e) = p9win::wctl(msg) {
++fn wctl_in(w: &p9win::Window, msg: &str) {
++    if let Err(e) = w.wctl(msg) {
 +        tracing::warn!("plan9: wctl {msg}: {e}");
 +    }
 +}
@@ -1139,65 +1227,116 @@ diff -ruN a/src/platform_impl/plan9/window.rs b/src/platform_impl/plan9/window.r
 +        attrs: window::WindowAttributes,
 +    ) -> Result<Self, error::OsError> {
 +        let shared = el.shared.clone();
-+        if shared.win.lock().unwrap().is_some() {
-+            return Err(os(std::io::Error::other(
-+                "plan9: one window a process (its window of the window system)",
-+            )));
-+        }
-+        let mut draw = Draw::open().map_err(os)?;
++        // the first window is the process's; after it, windows of wsys' clone
++        // file (rio has none: there a program has its one window)
++        let first = shared.wins.lock().unwrap().is_empty();
++        let win = if first {
++            p9win::Window::process()
++        } else {
++            let parent = match attrs.parent_window() {
++                Some(rwh_06::RawWindowHandle::Plan9(h)) => Some(p9win::Window::of(h.window)),
++                _ => None,
++            };
++            let role = if !attrs.decorations {
++                // a menu takes the focus (active), a tooltip leaves it
++                Role::Popup { grab: attrs.active }
++            } else if parent.is_some() {
++                Role::Dialog { modal: attrs.platform_specific.modal }
++            } else {
++                Role::Toplevel
++            };
++            // a popup or dialog of the process's window when no parent is named
++            let parent = parent.or_else(|| (role != Role::Toplevel).then(p9win::Window::process));
++            p9win::Window::create(parent.as_ref(), role).map_err(|e| {
++                os(std::io::Error::other(format!("plan9: another window (wsys' clone): {e}")))
++            })?
++        };
++        // its id: wsys' number (the process's window under rio: 1)
++        let id = WindowId(if win.id() != 0 { win.id() as u64 } else { 1 });
++        let scale = win.dpi() as f64 / 96.0;
++        let mut draw = Draw::open_in(win.dir()).map_err(os)?;
 +        let b = draw.border();
 +        let screen = draw.screen();
 +        let mut restore = None;
 +        let mut fullscreen = false;
-+        if attrs.fullscreen.is_some() {
-+            fullscreen = true;
-+            // wsys' fullscreen (no border, no title bar, above its bars), else
-+            // rio's way: the whole screen, the border outside it
-+            if p9win::wctl("fullscreen").is_err() {
-+                restore = Some(draw.content().inset(-b));
-+                wctl(&format!(
-+                    "resize -r {} {} {} {}",
-+                    screen.x0 - b,
-+                    screen.y0 - b,
-+                    screen.x1 + b,
-+                    screen.y1 + b
-+                ));
++        if first {
++            if attrs.fullscreen.is_some() {
++                fullscreen = true;
++                // wsys' fullscreen (no border, no title bar, above its bars), else
++                // rio's way: the whole screen, the border outside it
++                if win.wctl("fullscreen").is_err() {
++                    restore = Some(draw.content().inset(-b));
++                    wctl_in(&win, &format!(
++                        "resize -r {} {} {} {}",
++                        screen.x0 - b,
++                        screen.y0 - b,
++                        screen.x1 + b,
++                        screen.y1 + b
++                    ));
++                }
++            } else {
++                // logical sizes at the window system's scale (wsys' dpi)
++                if let Some(size) = attrs.inner_size {
++                    let (w, h): (u32, u32) = size.to_physical::<u32>(scale).into();
++                    wctl_in(&win, &format!("resize -dx {} -dy {}", w as i32 + 2 * b, h as i32 + 2 * b));
++                }
++                if let Some(pos) = attrs.position {
++                    let (x, y): (i32, i32) = pos.to_physical::<i32>(scale).into();
++                    wctl_in(&win, &format!("move -minx {x} -miny {y}"));
++                }
 +            }
 +        } else {
-+            // logical sizes at the window system's scale (wsys' dpi)
-+            if let Some(size) = attrs.inner_size {
-+                let (w, h): (u32, u32) = size.to_physical::<u32>(p9win::scale()).into();
-+                wctl(&format!("resize -dx {} -dy {}", w as i32 + 2 * b, h as i32 + 2 * b));
++            // its frame: where the program puts it (a popup: in the screen's
++            // coordinates, as winit's positions are), else where wsys did
++            let (fx0, fy0, fx1, fy1) = win.rect().unwrap_or((screen.x0, screen.y0, screen.x0 + 400, screen.y0 + 300));
++            let (w, h) = match attrs.inner_size {
++                Some(size) => {
++                    let (w, h): (u32, u32) = size.to_physical::<u32>(scale).into();
++                    (w as i32 + 2 * b, h as i32 + 2 * b)
++                },
++                None => (fx1 - fx0, fy1 - fy0),
++            };
++            let (x, y) = match attrs.position {
++                Some(pos) => pos.to_physical::<i32>(scale).into(),
++                None => (fx0, fy0),
++            };
++            if let Err(e) = win.set_rect(x, y, x + w, y + h) {
++                tracing::warn!("plan9: the window's place: {e}");
 +            }
-+            if let Some(pos) = attrs.position {
-+                let (x, y): (i32, i32) = pos.to_physical::<i32>(p9win::scale()).into();
-+                wctl(&format!("move -minx {x} -miny {y}"));
++            // the user's close asks the program (CloseRequested)
++            if attrs.platform_specific.ask_close != Some(false) {
++                let _ = win.ask_close(true);
++            }
++            if attrs.fullscreen.is_some() {
++                fullscreen = win.wctl("fullscreen").is_ok();
 +            }
 +        }
 +        draw.attach().map_err(os)?;
 +        let content = draw.content();
 +        if !attrs.title.is_empty() {
-+            let _ = p9win::set_label(&attrs.title);
++            let _ = win.set_label(&attrs.title);
 +        }
 +
 +        let feed = shared.clone();
-+        let inputs = Inputs::start(move |input| feed.poke(|q| q.inputs.push_back(input)))
++        let inputs = Inputs::start_in(win.dir(), move |input| feed.poke(|q| q.inputs.push_back((id, input))))
 +            .map_err(os)?;
 +        let st = Arc::new(WinState {
++            id,
++            win,
 +            draw: Mutex::new(draw),
 +            inputs,
 +            content: Mutex::new(content),
 +            cursor: Mutex::new(CursorShape::Arrow),
 +            cursor_visible: AtomicBool::new(true),
 +            grab: Mutex::new(CursorGrabMode::None),
-+            focused: AtomicBool::new(true),
++            focused: AtomicBool::new(first || attrs.active),
 +            hidden: AtomicBool::new(false),
 +            invisible: AtomicBool::new(false),
 +            restore: Mutex::new(restore),
 +            fullscreen: AtomicBool::new(fullscreen),
-+            scale: Mutex::new(p9win::scale()),
++            scale: Mutex::new(scale),
 +        });
-+        *shared.win.lock().unwrap() = Some(st.clone());
++        shared.wins.lock().unwrap().insert(id, st.clone());
 +        let w = Window { shared: shared.clone(), st };
 +        w.set_cursor(attrs.cursor.clone());
 +        if attrs.maximized && !fullscreen {
@@ -1205,15 +1344,31 @@ diff -ruN a/src/platform_impl/plan9/window.rs b/src/platform_impl/plan9/window.r
 +        }
 +        if !attrs.visible {
 +            w.set_visible(false);
++        } else if !first {
++            // a window of the clone file comes on the screen with its first
++            // picture or top: drawn through draw(3) (softbuffer) it has none
++            if let Err(e) = w.st.win.show() {
++                tracing::warn!("plan9: the window shown: {e}");
++            }
 +        }
-+        if attrs.active {
-+            wctl("current");
++        if attrs.active && first {
++            w.wctl("current");
 +        }
 +        shared.poke(|q| {
-+            q.created = true;
-+            q.redraw = true;
++            q.created.push(id);
++            q.redraw(id);
 +        });
 +        Ok(w)
++    }
++
++    /// a message to the window's wctl
++    fn wctl(&self, msg: &str) {
++        wctl_in(&self.st.win, msg);
++    }
++
++    /// its number in wsys (0: the process's window)
++    pub(crate) fn wsys_window(&self) -> u32 {
++        if self.st.win.is_process() { 0 } else { self.st.win.id() }
 +    }
 +
 +    pub(crate) fn maybe_queue_on_main(&self, f: impl FnOnce(&Self) + Send + 'static) {
@@ -1238,7 +1393,7 @@ diff -ruN a/src/platform_impl/plan9/window.rs b/src/platform_impl/plan9/window.r
 +
 +    #[inline]
 +    pub fn id(&self) -> WindowId {
-+        THE_WINDOW
++        self.st.id
 +    }
 +
 +    #[inline]
@@ -1265,7 +1420,7 @@ diff -ruN a/src/platform_impl/plan9/window.rs b/src/platform_impl/plan9/window.r
 +
 +    #[inline]
 +    pub fn request_redraw(&self) {
-+        self.shared.poke(|q| q.redraw = true);
++        self.shared.poke(|q| q.redraw(self.st.id));
 +    }
 +
 +    #[inline]
@@ -1289,7 +1444,7 @@ diff -ruN a/src/platform_impl/plan9/window.rs b/src/platform_impl/plan9/window.r
 +    #[inline]
 +    pub fn set_outer_position(&self, position: Position) {
 +        let (x, y): (i32, i32) = position.to_physical::<i32>(self.scale_factor()).into();
-+        wctl(&format!("move -minx {x} -miny {y}"));
++        self.wctl(&format!("move -minx {x} -miny {y}"));
 +        self.st.relook();
 +    }
 +
@@ -1303,7 +1458,7 @@ diff -ruN a/src/platform_impl/plan9/window.rs b/src/platform_impl/plan9/window.r
 +    pub fn request_inner_size(&self, size: Size) -> Option<PhysicalSize<u32>> {
 +        let (w, h): (u32, u32) = size.to_physical::<u32>(self.scale_factor()).into();
 +        let b = self.border();
-+        wctl(&format!("resize -dx {} -dy {}", w as i32 + 2 * b, h as i32 + 2 * b));
++        self.wctl(&format!("resize -dx {} -dy {}", w as i32 + 2 * b, h as i32 + 2 * b));
 +        // the window system's answer comes as a resize the event loop sees
 +        None
 +    }
@@ -1322,12 +1477,12 @@ diff -ruN a/src/platform_impl/plan9/window.rs b/src/platform_impl/plan9/window.r
 +
 +    #[inline]
 +    pub fn title(&self) -> String {
-+        p9win::label()
++        std::fs::read_to_string(self.st.win.path("label")).unwrap_or_default()
 +    }
 +
 +    #[inline]
 +    pub fn set_title(&self, title: &str) {
-+        let _ = p9win::set_label(title);
++        let _ = self.st.win.set_label(title);
 +    }
 +
 +    #[inline]
@@ -1339,7 +1494,7 @@ diff -ruN a/src/platform_impl/plan9/window.rs b/src/platform_impl/plan9/window.r
 +    #[inline]
 +    pub fn set_visible(&self, visible: bool) {
 +        self.st.invisible.store(!visible, Ordering::Relaxed);
-+        wctl(if visible { "unhide" } else { "hide" });
++        self.wctl(if visible { "unhide" } else { "hide" });
 +    }
 +
 +    #[inline]
@@ -1366,7 +1521,7 @@ diff -ruN a/src/platform_impl/plan9/window.rs b/src/platform_impl/plan9/window.r
 +    #[inline]
 +    pub fn set_minimized(&self, minimized: bool) {
 +        // the window system's hide: what its menu does
-+        wctl(if minimized { "hide" } else { "unhide" });
++        self.wctl(if minimized { "hide" } else { "unhide" });
 +        self.st.hidden.store(minimized, Ordering::Relaxed);
 +    }
 +
@@ -1381,10 +1536,10 @@ diff -ruN a/src/platform_impl/plan9/window.rs b/src/platform_impl/plan9/window.r
 +        if maximized && restore.is_none() {
 +            let s = self.screen();
 +            *restore = Some(self.content().inset(-self.border()));
-+            wctl(&format!("resize -r {} {} {} {}", s.x0, s.y0, s.x1, s.y1));
++            self.wctl(&format!("resize -r {} {} {} {}", s.x0, s.y0, s.x1, s.y1));
 +        } else if !maximized {
 +            if let Some(r) = restore.take() {
-+                wctl(&format!("resize -r {} {} {} {}", r.x0, r.y0, r.x1, r.y1));
++                self.wctl(&format!("resize -r {} {} {} {}", r.x0, r.y0, r.x1, r.y1));
 +            }
 +        }
 +        drop(restore);
@@ -1402,19 +1557,19 @@ diff -ruN a/src/platform_impl/plan9/window.rs b/src/platform_impl/plan9/window.r
 +        let full = self.st.fullscreen.load(Ordering::Relaxed);
 +        if monitor.is_some() {
 +            // wsys' fullscreen, else rio's way: the border outside the screen
-+            if !full && p9win::wctl("fullscreen").is_err() {
++            if !full && self.st.win.wctl("fullscreen").is_err() {
 +                let (s, b) = (self.screen(), self.border());
 +                if restore.is_none() {
 +                    *restore = Some(self.content().inset(-b));
 +                }
-+                wctl(&format!("resize -r {} {} {} {}", s.x0 - b, s.y0 - b, s.x1 + b, s.y1 + b));
++                self.wctl(&format!("resize -r {} {} {} {}", s.x0 - b, s.y0 - b, s.x1 + b, s.y1 + b));
 +            }
 +            self.st.fullscreen.store(true, Ordering::Relaxed);
 +        } else if let Some(r) = restore.take() {
-+            wctl(&format!("resize -r {} {} {} {}", r.x0, r.y0, r.x1, r.y1));
++            self.wctl(&format!("resize -r {} {} {} {}", r.x0, r.y0, r.x1, r.y1));
 +            self.st.fullscreen.store(false, Ordering::Relaxed);
 +        } else if full {
-+            wctl("unfullscreen");
++            self.wctl("unfullscreen");
 +            self.st.fullscreen.store(false, Ordering::Relaxed);
 +        }
 +        drop(restore);
@@ -1451,7 +1606,7 @@ diff -ruN a/src/platform_impl/plan9/window.rs b/src/platform_impl/plan9/window.r
 +
 +    #[inline]
 +    pub fn focus_window(&self) {
-+        wctl("current");
++        self.wctl("current");
 +    }
 +
 +    #[inline]
@@ -1531,7 +1686,7 @@ diff -ruN a/src/platform_impl/plan9/window.rs b/src/platform_impl/plan9/window.r
 +    #[cfg(feature = "rwh_06")]
 +    #[inline]
 +    pub fn raw_window_handle_rwh_06(&self) -> Result<rwh_06::RawWindowHandle, rwh_06::HandleError> {
-+        Ok(rwh_06::RawWindowHandle::Plan9(rwh_06::Plan9WindowHandle::new()))
++        Ok(rwh_06::RawWindowHandle::Plan9(rwh_06::Plan9WindowHandle::with_window(self.wsys_window())))
 +    }
 +
 +    #[cfg(feature = "rwh_06")]
@@ -1568,7 +1723,13 @@ diff -ruN a/src/platform_impl/plan9/window.rs b/src/platform_impl/plan9/window.r
 +
 +impl Drop for Window {
 +    fn drop(&mut self) {
-+        self.shared.poke(|q| q.destroyed = true);
++        // a window of the clone file goes with its WinState: out of the loop's
++        // map now, the clone file closed when this last Arc goes (the loop
++        // says Destroyed in its next round)
++        let (id, dir) = (self.st.id, self.st.win.dir().to_string());
++        p9win::cursor::forget(&dir);
++        self.shared.wins.lock().unwrap().remove(&id);
++        self.shared.poke(|q| q.destroyed.push(id));
 +    }
 +}
 +

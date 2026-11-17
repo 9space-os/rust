@@ -7,11 +7,16 @@
 // - wsys: the window made again in the next wsys when its wsys is gone
 // - cursor: /dev/cursor
 // - the window system's other files: /dev/label, /dev/wctl, /dev/snarf
+// - win: more windows than the process's (wsys' clone): dialogs, popups; the
+//   _in functions take a window's directory (Window::dir) instead of /dev
 
 pub mod cursor;
 pub mod draw;
 pub mod sys;
+pub mod win;
 pub mod wsys;
+
+pub use win::{Role, Window};
 
 use std::io;
 use std::sync::{Arc, Mutex};
@@ -63,6 +68,8 @@ pub enum Input {
     Wctl(String),
     /// /dev/mouse ended: the window is gone
     Closed,
+    /// the user asked to delete the window (wsys' close event: Window::ask_close)
+    CloseRequested,
 }
 
 /// The window's input: readers of /dev/mouse, /dev/kbd and /dev/wctl, each a
@@ -75,10 +82,27 @@ pub struct Inputs {
 
 type Sender = Arc<dyn Fn(Input) + Send + Sync>;
 
-/// readers of /dev/kbd and /dev/wctl (the window's now): until their file fails;
-/// rect gets the window's place from wctl's lines (x0 y0 x1 y1 ...)
-fn readers(send: &Sender, rect: &Arc<Mutex<Option<String>>>) -> io::Result<()> {
-    if let Ok(kbd) = Fd::open("/dev/kbd", OREAD) {
+/// readers of the window's kbd and wctl (in dir: /dev, the window's now): until
+/// their file fails; rect gets the window's place from wctl's lines (x0 y0 x1
+/// y1 ...); a window made by clone also its event file's close
+fn readers(dir: &str, send: &Sender, rect: &Arc<Mutex<Option<String>>>) -> io::Result<()> {
+    if dir != "/dev" {
+        if let Ok(ev) = Fd::open(&format!("{dir}/event"), OREAD) {
+            let send = send.clone();
+            std::thread::Builder::new().name("p9win event".into()).spawn(move || {
+                let mut b = [0u8; 4096];
+                while let Ok(n) = ev.read(&mut b) {
+                    if n == 0 {
+                        break;
+                    }
+                    if String::from_utf8_lossy(&b[..n]).lines().any(|l| l == "close") {
+                        send(Input::CloseRequested);
+                    }
+                }
+            })?;
+        }
+    }
+    if let Ok(kbd) = Fd::open(&format!("{dir}/kbd"), OREAD) {
         let send = send.clone();
         std::thread::Builder::new().name("p9win kbd".into()).spawn(move || {
             // messages k, K, c and a UTF-8 string each, NUL after each
@@ -102,7 +126,7 @@ fn readers(send: &Sender, rect: &Arc<Mutex<Option<String>>>) -> io::Result<()> {
             }
         })?;
     }
-    if let Ok(wctl) = Fd::open("/dev/wctl", OREAD) {
+    if let Ok(wctl) = Fd::open(&format!("{dir}/wctl"), OREAD) {
         let (send, rect) = (send.clone(), rect.clone());
         std::thread::Builder::new().name("p9win wctl".into()).spawn(move || {
             let mut b = [0u8; 256];
@@ -123,14 +147,25 @@ fn readers(send: &Sender, rect: &Arc<Mutex<Option<String>>>) -> io::Result<()> {
 }
 
 impl Inputs {
+    /// the process's window's
     pub fn start<F>(send: F) -> io::Result<Inputs>
+    where
+        F: Fn(Input) + Send + Sync + 'static,
+    {
+        Inputs::start_in("/dev", send)
+    }
+
+    /// the window's in dir (Window::dir): one made by clone is not made again
+    /// in another wsys (its mouse's end is Closed)
+    pub fn start_in<F>(dir: &str, send: F) -> io::Result<Inputs>
     where
         F: Fn(Input) + Send + Sync + 'static,
     {
         let send: Sender = Arc::new(send);
         let rect = Arc::new(Mutex::new(None));
-        let mouse = Arc::new(Mutex::new(Arc::new(Fd::open("/dev/mouse", ORDWR)?)));
-        readers(&send, &rect)?;
+        let dir = dir.to_string();
+        let mouse = Arc::new(Mutex::new(Arc::new(Fd::open(&format!("{dir}/mouse"), ORDWR)?)));
+        readers(&dir, &send, &rect)?;
         {
             let mouse = mouse.clone();
             std::thread::Builder::new().name("p9win mouse".into()).spawn(move || {
@@ -154,7 +189,8 @@ impl Inputs {
                         send(Input::Mouse { x: f[0] as i32, y: f[1] as i32, buttons: f[2] as u32, resized: k == b'r' });
                     }
                     // the window gone, or its wsys: then the window again in the next one
-                    if !wsys::lost() {
+                    // (the process's: one made by clone goes with its wsys)
+                    if dir != "/dev" || !wsys::lost() {
                         break;
                     }
                     let r = rect.lock().unwrap().clone();
@@ -165,7 +201,7 @@ impl Inputs {
                         Ok(f) => *mouse.lock().unwrap() = Arc::new(f),
                         Err(_) => break,
                     }
-                    if readers(&send, &rect).is_err() {
+                    if readers(&dir, &send, &rect).is_err() {
                         break;
                     }
                     send(Input::Mouse { x: 0, y: 0, buttons: 0, resized: true });

@@ -669,3 +669,25 @@ file locks), std/core/alloc test suites in the guest green except the TCP tests 
   `free_stack` detaches it (it was `segfree`); the slots are only places (`place_slots`), 1024 of
   them on 64 bit. A place another segment took (one the kernel placed for an attach at 0, the
   heap) stays taken; the thread then gets the next place, or a stack from malloc.
+
+## Several windows a program (2026-11-18)
+
+wsys(4) makes more windows for a program through a window's `clone` file
+(`/dev/clone`, `/dev/wsys/n/` for each): windows of their own, dialogs of a
+parent (modal or not), popups without a border. The window crates follow:
+
+- `p9win::Window` (win.rs): the process's window (`/dev`) or one made by
+  `Window::create(parent, Role)`; `Inputs::start_in`, `Draw::open_in`,
+  `cursor::set_in` take its directory; a window made so asks before the
+  user's Delete (`askclose`: `Input::CloseRequested`).
+- raw-window-handle's `Plan9WindowHandle` has `window`: 0 the process's,
+  n wsys' window n.
+- winit: windows by `WindowId` (wsys' number); after the first, a window
+  is wsys' (a dialog with a parent, a popup without decorations, else a
+  window of its own); `platform::plan9::{WindowAttributesExtPlan9::with_modal,
+  WindowExtPlan9::wsys_window}`; a dropped window goes at once.
+- softbuffer and wgpu-hal draw into the handle's window (`VK_PLAN9_surface`'s
+  `pWindowName`: the window's directory; Mesa's plan9 WSI keeps its state
+  per window).
+
+The tree's `tests/winit` (multiwin) checks the three kinds with their pixels.

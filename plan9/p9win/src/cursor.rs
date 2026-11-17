@@ -274,17 +274,28 @@ pub fn from_rgba(rgba: &[u8], w: usize, h: usize, hx: i32, hy: i32) -> Cursor {
     c
 }
 
-static CURSORFD: Mutex<Option<Fd>> = Mutex::new(None);
+// the cursor files open, by window directory
+static CURSORFD: Mutex<Vec<(String, Fd)>> = Mutex::new(Vec::new());
 
-/// the window's cursor: c, or the window system's arrow
+/// the process's window's cursor: c, or the window system's arrow
 pub fn set(c: Option<&Cursor>) -> std::io::Result<()> {
-    let mut fd = CURSORFD.lock().unwrap();
-    if fd.is_none() {
-        *fd = Some(Fd::open("/dev/cursor", OWRITE)?);
+    set_in("/dev", c)
+}
+
+/// the cursor of the window whose directory is dir (Window::dir)
+pub fn set_in(dir: &str, c: Option<&Cursor>) -> std::io::Result<()> {
+    let mut fds = CURSORFD.lock().unwrap();
+    if !fds.iter().any(|(d, _)| d == dir) {
+        fds.push((dir.to_string(), Fd::open(&format!("{dir}/cursor"), OWRITE)?));
     }
-    let fd = fd.as_ref().unwrap();
+    let fd = &fds.iter().find(|(d, _)| d == dir).unwrap().1;
     match c {
         Some(c) => fd.write1(c),
         None => fd.write(&[]).map(|_| ()),
     }
+}
+
+/// the window whose directory is dir gone: its cursor file closed
+pub fn forget(dir: &str) {
+    CURSORFD.lock().unwrap().retain(|(d, _)| d != dir);
 }
