@@ -1686,7 +1686,7 @@ diff -ruN a/src/platform_impl/plan9/window.rs b/src/platform_impl/plan9/window.r
 +    #[cfg(feature = "rwh_06")]
 +    #[inline]
 +    pub fn raw_window_handle_rwh_06(&self) -> Result<rwh_06::RawWindowHandle, rwh_06::HandleError> {
-+        Ok(rwh_06::RawWindowHandle::Plan9(rwh_06::Plan9WindowHandle::with_window(self.wsys_window())))
++        Ok(rwh_06::RawWindowHandle::Plan9(rwh_06::Plan9WindowHandle::with_window(self.st.win.key())))
 +    }
 +
 +    #[cfg(feature = "rwh_06")]

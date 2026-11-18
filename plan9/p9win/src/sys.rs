@@ -157,6 +157,12 @@ pub fn bind(new: &str, old: &str, flag: c_int) -> io::Result<()> {
     if unsafe { p9bind(n.as_ptr(), o.as_ptr(), flag) } < 0 { Err(err()) } else { Ok(()) }
 }
 
+/// all that is bound or mounted on old taken away (unmount(2) with no new)
+pub fn unmount_all(old: &str) -> io::Result<()> {
+    let o = cstr(old)?;
+    if unsafe { p9unmount(std::ptr::null(), o.as_ptr()) } < 0 { Err(err()) } else { Ok(()) }
+}
+
 /// new taken away from old (unmount(2))
 pub fn unmount(new: &str, old: &str) -> io::Result<()> {
     let (n, o) = (cstr(new)?, cstr(old)?);

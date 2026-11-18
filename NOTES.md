@@ -691,3 +691,12 @@ parent (modal or not), popups without a border. The window crates follow:
   per window).
 
 The tree's `tests/winit` (multiwin) checks the three kinds with their pixels.
+- (2026-11-18) A window of the clone file outlives its wsys as the
+  process's window does: p9win keeps how it was made (parent, role, modal,
+  askclose, place, label), binds it at `/mnt/wsyswin.k` (k: its key, from 1;
+  `/mnt` is mntgen's), and when its reader finds the window's own wsys gone
+  (that wsys' process, not `$wsys`, which the process's window may have moved
+  on already) it waits for the process's window in the next wsys and makes
+  every such window again there, parents first, bound at the same place.
+  raw-window-handle's `window` is the key; softbuffer and wgpu-hal take
+  `/mnt/wsyswin.k`.

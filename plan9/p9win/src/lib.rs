@@ -128,6 +128,7 @@ fn readers(dir: &str, send: &Sender, rect: &Arc<Mutex<Option<String>>>) -> io::R
     }
     if let Ok(wctl) = Fd::open(&format!("{dir}/wctl"), OREAD) {
         let (send, rect) = (send.clone(), rect.clone());
+        let wdir = dir.to_string();
         std::thread::Builder::new().name("p9win wctl".into()).spawn(move || {
             let mut b = [0u8; 256];
             while let Ok(n) = wctl.read(&mut b) {
@@ -138,6 +139,8 @@ fn readers(dir: &str, send: &Sender, rect: &Arc<Mutex<Option<String>>>) -> io::R
                 let f: Vec<&str> = s.split_whitespace().take(4).collect();
                 if f.len() == 4 && f.iter().all(|x| x.parse::<i32>().is_ok()) {
                     *rect.lock().unwrap() = Some(f.join(" "));
+                    let v: Vec<i32> = f.iter().map(|x| x.parse().unwrap()).collect();
+                    win::seen_at(&wdir, v[0], v[1], v[2], v[3]);
                 }
                 send(Input::Wctl(s));
             }
@@ -189,15 +192,20 @@ impl Inputs {
                         send(Input::Mouse { x: f[0] as i32, y: f[1] as i32, buttons: f[2] as u32, resized: k == b'r' });
                     }
                     // the window gone, or its wsys: then the window again in the next one
-                    // (the process's: one made by clone goes with its wsys)
-                    if dir != "/dev" || !wsys::lost() {
+                    // (the process's by its reader; one of the clone file once the
+                    // process's is there, at the same directory: win.rs)
+                    if !(if dir == "/dev" { wsys::lost() } else { win::lost_at(&dir) }) {
                         break;
                     }
-                    let r = rect.lock().unwrap().clone();
-                    if wsys::reattach(r.as_deref()).is_err() {
+                    if dir == "/dev" {
+                        let r = rect.lock().unwrap().clone();
+                        if wsys::reattach(r.as_deref()).is_err() {
+                            break;
+                        }
+                    } else if wsys::wait_again().is_err() || win::remake().is_err() {
                         break;
                     }
-                    match Fd::open("/dev/mouse", ORDWR) {
+                    match Fd::open(&format!("{dir}/mouse"), ORDWR) {
                         Ok(f) => *mouse.lock().unwrap() = Arc::new(f),
                         Err(_) => break,
                     }

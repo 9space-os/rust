@@ -33,6 +33,11 @@ fn hungup() -> bool {
     }
 }
 
+/// the wsys of /srv entry srv (/srv/wsys.user.pid) is gone: its process
+pub fn gone(srv: &str) -> bool {
+    srv.starts_with("/srv/wsys.") && pid(srv).is_some_and(|p| !alive(p))
+}
+
 /// the window's wsys is gone: under a wsys ($wsys: /srv/wsys.user.pid; rio's
 /// windows go with it, as they did), whose process is no more or whose mount
 /// hung up. Asked when a read of the window's files failed
@@ -69,6 +74,21 @@ fn newest() -> Option<String> {
 fn current_alive() -> bool {
     // not only its process: a killed wsys' procs stay a while after its mount hung up
     std::env::var("wsys").ok().as_deref().and_then(pid).is_some_and(alive) && !hungup()
+}
+
+/// a window of the clone file (win.rs) found its wsys gone: until the
+/// process's window is in the next one (its own reader makes it: reattach),
+/// a look a tenth of a second, $wsyswait seconds as reattach; then an error
+pub fn wait_again() -> io::Result<()> {
+    let secs: u64 = std::env::var("wsyswait").ok().and_then(|v| v.trim_end_matches('\0').trim().parse().ok()).unwrap_or(300);
+    let start = std::time::Instant::now();
+    while secs == 0 || start.elapsed() < Duration::from_secs(secs) {
+        if current_alive() {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Err(io::Error::other("no next wsys in time ($wsyswait)"))
 }
 
 /// one at a time in the program
