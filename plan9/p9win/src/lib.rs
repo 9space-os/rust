@@ -139,8 +139,7 @@ fn readers(dir: &str, send: &Sender, rect: &Arc<Mutex<Option<String>>>) -> io::R
                 let f: Vec<&str> = s.split_whitespace().take(4).collect();
                 if f.len() == 4 && f.iter().all(|x| x.parse::<i32>().is_ok()) {
                     *rect.lock().unwrap() = Some(f.join(" "));
-                    let v: Vec<i32> = f.iter().map(|x| x.parse().unwrap()).collect();
-                    win::seen_at(&wdir, v[0], v[1], v[2], v[3]);
+                    win::seen_at(&wdir);
                 }
                 send(Input::Wctl(s));
             }

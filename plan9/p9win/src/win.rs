@@ -42,7 +42,7 @@ struct Made {
     id: u32,     // its number in the wsys it is in now
     ctl: Option<Fd>,
     askclose: bool,
-    rect: Option<(i32, i32, i32, i32)>, // its frame as last set or seen
+    rect: Option<(i32, i32, i32, i32)>, // its contents as last set or seen (ctl's rect)
     label: Option<String>,
     srv: String, // the wsys it is in ($wsys when it was made)
 }
@@ -139,12 +139,21 @@ pub fn remake() -> io::Result<()> {
     Ok(())
 }
 
-/// the place of the window at dir (a line of its wctl): kept for the next wsys
-pub fn seen_at(dir: &str, x0: i32, y0: i32, x1: i32, y1: i32) {
+/// the place of the window at dir now, kept for the next wsys: its contents
+/// as its ctl says (id x0 y0 x1 y1 ...), what the ctl message rect wants
+/// (wctl's is the frame: border, title bar)
+pub fn seen_at(dir: &str) {
     for w in MADE.lock().unwrap().iter() {
         let mut m = w.lock().unwrap();
-        if keydir(m.key) == dir {
-            m.rect = Some((x0, y0, x1, y1));
+        if keydir(m.key) != dir {
+            continue;
+        }
+        let Some(ctl) = &m.ctl else { continue };
+        let mut b = [0u8; 256];
+        let Ok(n) = ctl.pread(&mut b, 0) else { continue };
+        let v: Vec<i32> = String::from_utf8_lossy(&b[..n]).split_whitespace().skip(1).take(4).filter_map(|x| x.parse().ok()).collect();
+        if v.len() == 4 {
+            m.rect = Some((v[0], v[1], v[2], v[3]));
         }
     }
 }
@@ -235,8 +244,8 @@ impl Window {
         self.ctl("top")
     }
 
-    /// its frame on the screen (border and all, as wctl says); kept for the
-    /// next wsys
+    /// its contents on the screen (wsys' ctl rect: the frame, border and
+    /// title bar, around them); kept for the next wsys
     pub fn set_rect(&self, x0: i32, y0: i32, x1: i32, y1: i32) -> io::Result<()> {
         if let Some(m) = &self.made {
             m.lock().unwrap().rect = Some((x0, y0, x1, y1));
@@ -244,11 +253,9 @@ impl Window {
         self.ctl(&format!("rect {x0} {y0} {x1} {y1}"))
     }
 
-    /// its place now (a line of its wctl): kept for the next wsys
-    pub fn seen(&self, x0: i32, y0: i32, x1: i32, y1: i32) {
-        if let Some(m) = &self.made {
-            m.lock().unwrap().rect = Some((x0, y0, x1, y1));
-        }
+    /// its place now: kept for the next wsys (seen_at)
+    pub fn seen(&self) {
+        seen_at(&self.dir);
     }
 
     /// the user's Delete asks (the event close) instead of deleting it
@@ -277,6 +284,17 @@ impl Window {
     /// its dots per inch (wsys' dpi file), 96 without one
     pub fn dpi(&self) -> i32 {
         std::fs::read_to_string(self.path("dpi")).ok().and_then(|s| s.trim().parse().ok()).filter(|&d: &i32| d > 0).unwrap_or(96)
+    }
+
+    /// its contents on the screen, as its ctl says (id x0 y0 x1 y1 ...): what
+    /// set_rect sets; none for the process's window (no ctl of its own)
+    pub fn contents(&self) -> Option<(i32, i32, i32, i32)> {
+        let m = self.made.as_ref()?.lock().unwrap();
+        let ctl = m.ctl.as_ref()?;
+        let mut b = [0u8; 256];
+        let n = ctl.pread(&mut b, 0).ok()?;
+        let v: Vec<i32> = String::from_utf8_lossy(&b[..n]).split_whitespace().skip(1).take(4).filter_map(|x| x.parse().ok()).collect();
+        (v.len() == 4).then(|| (v[0], v[1], v[2], v[3]))
     }
 
     /// its place on the screen, as its wctl says (x0 y0 x1 y1, border and all)
