@@ -390,9 +390,10 @@ amd64), `/tmp` on ext4, loopback `127.1` and `::1`, 900 s limit, and returns out
   network tests green in 6 of 6 runs (61 ok, ~1.1 s each; `logs/stdtest.net-fix*.log`), csstress with
   12, 24, 50 procs passes. std still chooses numeric addresses directly (`/net/tcp/clone`), cs
   is unnecessary for SocketAddr.
-- **Open: TCP half close.** 9front's ctl `close` also hangs up the read side (`tcpclose`:
-  `qhangup(c->rq)`), so `shutdown(Write)` ends both directions: a reply from the
-  peer is silently lost (HTTP clients, nc-style tools). Solvable only in the kernel.
+- **Solved: TCP half close.** 9front's ctl `close` also hung up the read side (`tcpclose`:
+  `qhangup(c->rq)`), so `shutdown(Write)` ended both directions. The kernel's ctl
+  `shutdown` (a FIN, the receive side stays open; the tree's 942d1df69) is what
+  `shutdown(Write)` writes now (below: Kernel, tokio).
 
 ## Tests
 
@@ -645,9 +646,6 @@ As of 2026-10-31: amd64 and 386 cross and native (std, rustc, cargo, proc macros
 file locks), std/core/alloc test suites in the guest green except the TCP tests under load.
 - **async**: TCP keepalive in std is missing; a caught note interrupts blocked calls
   (Part 12).
-- **9front kernel** (not from the port, 9front-gccwt MEMORY.md): TCP `connect` over loopback hangs
-  under load (`tools/csstress`); 2026-11-10 also on the unmodified `front`, kernel and
-  userland built with kencc.
 - **arm64** (Part 14): std test suite not run; the guest has only one processor.
 - **Tools**: the doc tests of std never run (`--no-doc`); rustdoc and clippy-driver
   each contain the whole compiler (together with rustc ~490 MB; one program for all three
@@ -700,3 +698,9 @@ The tree's `tests/winit` (multiwin) checks the three kinds with their pixels.
   every such window again there, parents first, bound at the same place.
   raw-window-handle's `window` is the key; softbuffer and wgpu-hal take
   `/mnt/wsyswin.k`.
+- (2026-11-19) winit's `request_inner_size` and a first window's
+  `inner_size`: wctl's `resize -dx -dy` takes the frame, and wsys' frame
+  holds its title bar; the size asked was the contents plus 2x the border
+  only, so the contents came out a title bar short. Now the frame's extra
+  (wctl's rectangle minus the contents, `frame_extra`), 2x the border
+  without it (rio).
