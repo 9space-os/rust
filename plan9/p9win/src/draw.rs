@@ -9,6 +9,17 @@
 use crate::compress;
 use crate::sys::{Fd, ORDWR, OREAD};
 use std::io;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// bumped when the window system said the window changed (mouse(4)'s 'r'):
+/// every connection looks its window up again at its next attach
+static CHANGED: AtomicU64 = AtomicU64::new(0);
+
+/// the window changed (a resize event): the next attach of every Draw of
+/// the process names its window image again
+pub fn invalidate() {
+    CHANGED.fetch_add(1, Ordering::Relaxed);
+}
 
 /// x8r8g8b8: what the window's pixels are on 9front's screens, and a u32 of
 /// 0x00RRGGBB in memory (softbuffer's pixels)
@@ -110,6 +121,7 @@ pub struct Draw {
     scratch: Option<(u32, i32, i32)>, // the x8r8g8b8 image put loads into, then draws from
     maxmsg: usize, // the most a write carries (the data file's iounit)
     far: bool,     // the display far away: put's loads compressed
+    seen: Option<(String, String, u64)>, // winname, wctl's rectangle, CHANGED at the last lookup
 }
 
 impl Draw {
@@ -142,6 +154,7 @@ impl Draw {
             scratch: None,
             maxmsg,
             far,
+            seen: None,
         };
         d.opaque = d.alloc(Rect::new(0, 0, 1, 1), GREY1, true, 0xFFFF_FFFF)?;
         d.attach()?;
@@ -158,7 +171,11 @@ impl Draw {
             self.flushbuf()?;
         }
         if m.len() > self.maxmsg {
-            return self.data.write1(m);
+            let r = self.data.write1(m);
+            if r.is_err() {
+                self.seen = None;
+            }
+            return r;
         }
         self.buf.extend_from_slice(m);
         Ok(())
@@ -168,6 +185,9 @@ impl Draw {
         if !self.buf.is_empty() {
             let r = self.data.write1(&self.buf);
             self.buf.clear();
+            if r.is_err() {
+                self.seen = None; // the next attach looks again
+            }
             r?;
         }
         Ok(())
@@ -203,8 +223,30 @@ impl Draw {
     }
 
     /// the window again, by the name /dev/winname has now (rio names a window
-    /// anew when it changes); without /dev/winname the screen
+    /// anew when it changes); without /dev/winname the screen. Only when
+    /// something changed since the last time: the name, the place wctl says
+    /// (wsys moves a window under the same name), a resize event
+    /// (invalidate) or a write that failed. The lookup costs round trips
+    /// (a flush, 'f', 'n', ctl read), each one a network's under drawterm;
+    /// winname and wctl are the window system's, read where the program runs.
     pub fn attach(&mut self) -> io::Result<()> {
+        let now = (self.readfile("winname"), self.readfile("wctl").split_whitespace().take(4).collect::<Vec<_>>().join(" "), CHANGED.load(Ordering::Relaxed));
+        if self.seen.as_ref() == Some(&now) {
+            return Ok(());
+        }
+        self.lookup()?;
+        self.seen = Some(now);
+        Ok(())
+    }
+
+    fn readfile(&self, f: &str) -> String {
+        let Ok(fd) = Fd::open(&format!("{}/{f}", self.dir), OREAD) else { return String::new() };
+        let mut b = [0u8; 256];
+        let n = fd.read(&mut b).unwrap_or(0);
+        String::from_utf8_lossy(&b[..n]).trim().to_string()
+    }
+
+    fn lookup(&mut self) -> io::Result<()> {
         // the connection's devdraw gone (the window's wsys: wsys.rs made the
         // window again in the next one): a new connection, its images anew
         // (a flush: harmless, it fails only there; ctl cannot tell, a new connection's
@@ -213,14 +255,7 @@ impl Draw {
             *self = Draw::open_in(&self.dir.clone())?;
             return Ok(());
         }
-        let name = match Fd::open(&format!("{}/winname", self.dir), OREAD) {
-            Ok(fd) => {
-                let mut b = [0u8; 256];
-                let n = fd.read(&mut b)?;
-                String::from_utf8_lossy(&b[..n]).trim().to_string()
-            }
-            Err(_) => String::new(),
-        };
+        let name = self.readfile("winname");
         if name.is_empty() {
             if self.win != 0 {
                 let w = self.win;
@@ -302,8 +337,13 @@ impl Draw {
         for d in &shown {
             self.load_at(scratch, d, bytes, stride, d.x0, d.y0)?;
         }
-        // the loads written; the window's draws in a write of their own
-        self.flushbuf()?;
+        // the window's draws in one write (they may share it with the last
+        // loads: those go into scratch, not the window): all of them or none
+        // shown by a window system composing meanwhile; one write a frame for
+        // a small change, a round trip under drawterm
+        if self.buf.len() + shown.len() * (1 + 12 + 16 + 16) + 1 > self.maxmsg {
+            self.flushbuf()?;
+        }
         let (win, opaque) = (self.win, self.opaque);
         for d in &shown {
             let mut m = vec![b'd'];

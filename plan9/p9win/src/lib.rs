@@ -189,6 +189,10 @@ impl Inputs {
                         if f.len() < 3 {
                             continue;
                         }
+                        if k == b'r' {
+                            // every Draw of the process looks its window up again
+                            draw::invalidate();
+                        }
                         send(Input::Mouse { x: f[0] as i32, y: f[1] as i32, buttons: f[2] as u32, resized: k == b'r' });
                     }
                     // the window gone, or its wsys: then the window again in the next one
@@ -212,6 +216,7 @@ impl Inputs {
                     if readers(&dir, &send, &rect).is_err() {
                         break;
                     }
+                    draw::invalidate();
                     send(Input::Mouse { x: 0, y: 0, buttons: 0, resized: true });
                 }
                 send(Input::Closed);
