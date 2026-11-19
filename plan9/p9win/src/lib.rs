@@ -11,6 +11,7 @@
 //   _in functions take a window's directory (Window::dir) instead of /dev
 
 pub mod cursor;
+mod compress;
 pub mod draw;
 pub mod sys;
 pub mod win;

@@ -6,6 +6,7 @@
 // rio client finds it after every resize: rio gives it a new name), or the
 // screen without a window system; pixels loaded into it.
 
+use crate::compress;
 use crate::sys::{Fd, ORDWR, OREAD};
 use std::io;
 
@@ -21,8 +22,24 @@ pub const BORDERWIDTH: i32 = 4;
 pub fn scalesize(dpi: i32, n: i32) -> i32 {
     if dpi <= 0 { n } else { (n * dpi + 48) / 96 }
 }
-// libdraw sends at most its buffer (8000 bytes without an iounit); the same here
+// libdraw sends at most its buffer: the data file's iounit (drawterm's
+// 32 KB less 9P's header), 8000 bytes without one; the same here
 const MAXMSG: usize = 8000;
+
+/// the data file's iounit and whether it is far away (a mount: drawterm's
+/// or rcpu's /dev/draw, not devdraw), from /fd/Nctl as libc's iounit reads it
+fn datafile(fd: &Fd) -> (usize, bool) {
+    let Ok(c) = Fd::open(&format!("/fd/{}ctl", fd.0), OREAD) else { return (MAXMSG, false) };
+    let mut b = [0u8; 256];
+    let Ok(n) = c.read(&mut b) else { return (MAXMSG, false) };
+    let s = String::from_utf8_lossy(&b[..n]).into_owned();
+    let f: Vec<&str> = s.split_whitespace().collect();
+    if f.len() < 10 {
+        return (MAXMSG, false);
+    }
+    let io = f[7].parse::<usize>().ok().filter(|&n| n >= 512).unwrap_or(MAXMSG);
+    (io, f[2] != "i")
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Rect {
@@ -91,6 +108,8 @@ pub struct Draw {
     screen: Rect,
     opaque: u32,
     scratch: Option<(u32, i32, i32)>, // the x8r8g8b8 image put loads into, then draws from
+    maxmsg: usize, // the most a write carries (the data file's iounit)
+    far: bool,     // the display far away: put's loads compressed
 }
 
 impl Draw {
@@ -107,10 +126,11 @@ impl Draw {
         let f = info(&b[..n])?;
         let data = Fd::open(&format!("/dev/draw/{}/data", f[0]), ORDWR)?;
         let screen = Rect::new(int(&f[4]), int(&f[5]), int(&f[6]), int(&f[7]));
+        let (maxmsg, far) = datafile(&data);
         let mut d = Draw {
             ctl,
             data,
-            buf: Vec::with_capacity(MAXMSG),
+            buf: Vec::with_capacity(maxmsg),
             next: 16,
             dir: dir.to_string(),
             name: String::new(),
@@ -120,6 +140,8 @@ impl Draw {
             screen,
             opaque: 0,
             scratch: None,
+            maxmsg,
+            far,
         };
         d.opaque = d.alloc(Rect::new(0, 0, 1, 1), GREY1, true, 0xFFFF_FFFF)?;
         d.attach()?;
@@ -132,10 +154,10 @@ impl Draw {
     }
 
     fn cmd(&mut self, m: &[u8]) -> io::Result<()> {
-        if self.buf.len() + m.len() > MAXMSG {
+        if self.buf.len() + m.len() > self.maxmsg {
             self.flushbuf()?;
         }
-        if m.len() > MAXMSG {
+        if m.len() > self.maxmsg {
             return self.data.write1(m);
         }
         self.buf.extend_from_slice(m);
@@ -297,12 +319,48 @@ impl Draw {
         self.flush()
     }
 
-    /// 'y': rectangle r of image id from pixels laid out with stride (x8r8g8b8),
-    /// those for r's top left at (sx, sy), in messages of at most MAXMSG bytes:
-    /// bands of rows, or pieces of a row too long for one
+    /// rectangle r of image id from pixels laid out with stride (x8r8g8b8),
+    /// those for r's top left at (sx, sy): to a display far away compressed
+    /// ('Y', image(6)'s blocks, a message each), else as they are ('y')
     fn load_at(&mut self, id: u32, r: &Rect, px: &[u8], stride: usize, sx: i32, sy: i32) -> io::Result<()> {
+        if !self.far {
+            return self.load_raw(id, r, px, stride, sx, sy);
+        }
+        let bpl = r.dx() as usize * 4;
+        let mut rows = Vec::with_capacity(bpl * r.dy() as usize);
+        for y in 0..r.dy() {
+            let o = (sy + y) as usize * stride + sx as usize * 4;
+            rows.extend_from_slice(&px[o..o + bpl]);
+        }
+        let nout = self.maxmsg - 1 - 4 - 16;
+        let mut out = Vec::with_capacity(nout);
+        let mut y = 0;
+        while y < r.dy() {
+            let n = compress::lines(&rows[y as usize * bpl..], bpl, &mut out, nout) as i32;
+            if n == 0 || out.len() >= n as usize * bpl {
+                // not a line fits compressed, or no smaller: as it is
+                let n = n.max(1);
+                let band = Rect::new(r.x0, r.y0 + y, r.x1, r.y0 + y + n);
+                self.load_raw(id, &band, px, stride, sx, sy + y)?;
+                y += n;
+                continue;
+            }
+            let mut m = Vec::with_capacity(1 + 4 + 16 + out.len());
+            m.push(b'Y');
+            m.extend_from_slice(&id.to_le_bytes());
+            rect(&mut m, &Rect::new(r.x0, r.y0 + y, r.x1, r.y0 + y + n));
+            m.extend_from_slice(&out);
+            self.cmd(&m)?;
+            y += n;
+        }
+        Ok(())
+    }
+
+    /// 'y': as load_at, the pixels as they are, in messages of at most maxmsg
+    /// bytes: bands of rows, or pieces of a row too long for one
+    fn load_raw(&mut self, id: u32, r: &Rect, px: &[u8], stride: usize, sx: i32, sy: i32) -> io::Result<()> {
         let (dx, dy) = (sx - r.x0, sy - r.y0);
-        let room = MAXMSG - 1 - 4 - 16;
+        let room = self.maxmsg - 1 - 4 - 16;
         let bpl = r.dx() as usize * 4;
         let mut y = r.y0;
         while y < r.y1 {
@@ -316,7 +374,7 @@ impl Draw {
             while x < band.x1 {
                 let x1 = if bpl <= room { band.x1 } else { (x + (room / 4) as i32).min(band.x1) };
                 let n = (x1 - x) as usize * 4;
-                if self.buf.len() + 1 + 4 + 16 + n * rows as usize > MAXMSG {
+                if self.buf.len() + 1 + 4 + 16 + n * rows as usize > self.maxmsg {
                     self.flushbuf()?;
                 }
                 self.buf.push(b'y');
