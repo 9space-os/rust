@@ -37,7 +37,7 @@ rustc=$R/$T/stage2/bin/rustc
 cargo=$TOP/tests/out/cargo-port/$T/release/cargo
 # std from the stage-1 sysroot: the stage-2 one is the same files (bootstrap uplifts it),
 # but a stage-2 build for one target removes the others'
-std=$R/x86_64-unknown-linux-gnu/stage1/lib/rustlib/$T/lib
+std=$R/host/stage1/lib/rustlib/$T/lib
 [ -x "$rustc" ] || die "no $rustc: ./x build --stage 2 --host $T --target $T compiler/rustc"
 [ -x "$cargo" ] || die "no $cargo: objtype=$A scripts/build-cargo.sh"
 ls "$std"/libstd-*.rlib >/dev/null 2>&1 || die "no std in $std: ./x build --stage 1 library --target $T"
@@ -47,7 +47,7 @@ mkdir -p "$D/bin" "$D/lib/rustlib/$T/lib"
 "$STRIP" -o "$D/bin/rustc" "$rustc"
 "$STRIP" -o "$D/bin/cargo" "$cargo"
 # the tools, where bootstrap builds them for the host T (stage2/bin it makes anew each run)
-TOOLS=$R/x86_64-unknown-linux-gnu/stage2-tools/$T/release
+TOOLS=$R/host/stage2-tools/$T/release
 for t in rustdoc:rustdoc-tool-binary rustfmt cargo-fmt clippy-driver cargo-clippy; do
 	f=$TOOLS/${t#*:}
 	if [ -x "$f" ]; then
@@ -59,7 +59,7 @@ done
 # rlibs and rmeta: bootstrap builds std with -Zembed-metadata=no, its metadata only in
 # the .rmeta beside each rlib. Only std's, as its stamp lists them: after a build of the
 # tools for the host T the sysroot also has the compiler's crates (rustc_private)
-stamp=$R/x86_64-unknown-linux-gnu/stage1-std/$T/dist/.libstd-stamp
+stamp=$R/host/stage1-std/$T/dist/.libstd-stamp
 [ -s "$stamp" ] || die "no $stamp: ./x build --stage 1 library --target $T"
 tr '\0' '\n' < "$stamp" | sed -n 's|^t.*/||p' | grep -E '\.(rlib|rmeta)$' |
 	while read -r f; do cp "$std/$f" "$D/lib/rustlib/$T/lib/"; done

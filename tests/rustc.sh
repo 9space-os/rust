@@ -32,7 +32,7 @@ I=$TOP/build/rustc-plan9$L
 rm -rf "$I"
 mkdir -p "$I/bin" "$I/lib/rustlib/$TG/lib"
 "$X-strip" -o "$I/bin/rustc" "$R/$TG/stage2/bin/rustc"
-cp "$R"/x86_64-unknown-linux-gnu/stage1/lib/rustlib/$TG/lib/*.r{lib,meta} \
+cp "$R"/host/stage1/lib/rustlib/$TG/lib/*.r{lib,meta} \
 	"$I/lib/rustlib/$TG/lib/"
 # rustc, the native gcc, and what it links with, on an ext4 disk (tests/guest.sh -D: the
 # guest's root is the host's over 9P, slow for these); the root has no headers and archives

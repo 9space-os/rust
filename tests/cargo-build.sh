@@ -34,7 +34,7 @@ rm -rf "$I"
 mkdir -p "$I/bin" "$I/lib/rustlib/$TG/lib"
 "$X-strip" -o "$I/bin/rustc" "$R/$TG/stage2/bin/rustc"
 "$X-strip" -o "$I/bin/cargo" "$TOP/tests/out/cargo-port/$TG/release/cargo"
-cp "$R"/x86_64-unknown-linux-gnu/stage1/lib/rustlib/$TG/lib/*.r{lib,meta} \
+cp "$R"/host/stage1/lib/rustlib/$TG/lib/*.r{lib,meta} \
 	"$I/lib/rustlib/$TG/lib/"
 cat > "$T/t.rc" <<'RC'
 #!/bin/rc
