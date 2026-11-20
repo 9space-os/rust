@@ -1,0 +1,47 @@
+diff -ruN a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -205,9 +205,19 @@
+         Ok((width, height))
+     }
+ 
+-    fn new(device: wgpu::Device, queue: wgpu::Queue) -> Result<Self, Error> {
+-        let renderer = vello::Renderer::new(&device, vello::RendererOptions::default())
+-            .map_err(Error::Render)?;
++    fn new(
++        device: wgpu::Device,
++        queue: wgpu::Queue,
++        pipeline_cache: Option<wgpu::PipelineCache>,
++    ) -> Result<Self, Error> {
++        let renderer = vello::Renderer::new(
++            &device,
++            vello::RendererOptions {
++                pipeline_cache,
++                ..vello::RendererOptions::default()
++            },
++        )
++        .map_err(Error::Render)?;
+ 
+         Ok(Self {
+             renderer,
+@@ -265,8 +275,19 @@
+ impl VelloRenderer {
+     /// Create a renderer bound to an existing `wgpu` device and queue.
+     pub fn new(device: wgpu::Device, queue: wgpu::Queue) -> Result<Self, Error> {
++        Self::with_pipeline_cache(device, queue, None)
++    }
++
++    /// 9space: the same, its pipelines made with (and into) a pipeline
++    /// cache: the shaders compiled before, kept by the caller across starts
++    /// (9front's ui, through masonry_imaging's set_pipeline_cache).
++    pub fn with_pipeline_cache(
++        device: wgpu::Device,
++        queue: wgpu::Queue,
++        pipeline_cache: Option<wgpu::PipelineCache>,
++    ) -> Result<Self, Error> {
+         Ok(Self {
+-            state: VelloRendererState::new(device, queue)?,
++            state: VelloRendererState::new(device, queue, pipeline_cache)?,
+             target: None,
+         })
+     }

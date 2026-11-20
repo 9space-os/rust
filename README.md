@@ -57,6 +57,9 @@ Their changes are patches like the other crates' (`patches/crates`,
 - `wgpu-28.0.0`, `wgpu-core-28.0.1`, `wgpu-hal-28.0.1`: the same for wgpu 28
   (Masonry's git revision, 9front's ui); wgpu-hal names what libvulkan.a needs
   after it (`draw 9 fmt utf stdc++`): no `-l` flags in the program.
+- `imaging_vello-0.0.1`: `VelloRenderer::with_pipeline_cache` (vello's
+  `RendererOptions.pipeline_cache`): 9front's ui keeps the compiled
+  pipelines across starts (`$home/lib/ui/cache`).
 - `eframe-0.37.0`: egui's framework with or without a GPU: the feature
   `software` (`src/native/painter.rs`) paints on the processor
   (hdrshot-egui-backend, egui_software_backend for egui 0.37) into softbuffer.
