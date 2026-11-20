@@ -4,7 +4,8 @@
 # paths.env) native gcc (/amd64/gnu, the linker) in the guest; compiles and runs
 # tests/std1.rs there (other objtypes: /$objtype/...).
 # rustc is called as /bin/rustc (bind), its sysroot /amd64/rust (rustc's fallback on plan9).
-# Prints "name ok" or "name FAIL ...". Log: logs/rustc-guest.log.
+# Prints "name ok" or "name FAIL ..."; exits 1 unless version, compile and run are
+# all ok. Log: logs/rustc-guest.log.
 # env: GCC9OUT (the native toolchain, default GCC_DIR/out), MEM (guest MB, 3072),
 # PLAN9 (the system booted: its APE and libp9.a link the program; default TREE)
 set -e
@@ -45,4 +46,6 @@ cmds=(
 )
 MEM=${MEM:-3072} CMDWAIT=${CMDWAIT:-1800} GUEST_TIMEOUT=${GUEST_TIMEOUT:-3000} "$TOP/tests/guest.sh" "${args[@]}" -f "$TOP/tests/std1.rs" -- "${cmds[@]}" \
 	> "$TOP/logs/rustc-guest$L.log" 2>&1
-grep -E '^(version|compile|run) (ok|FAIL)' "$TOP/logs/rustc-guest$L.log" || { tail -30 "$TOP/logs/rustc-guest$L.log"; exit 1; }
+# the three lines; ok only when all three say ok
+grep -E '^(version|compile|run) (ok|FAIL)' "$TOP/logs/rustc-guest$L.log" || true
+[ "$(grep -cE '^(version|compile|run) ok' "$TOP/logs/rustc-guest$L.log")" = 3 ] || { tail -30 "$TOP/logs/rustc-guest$L.log"; exit 1; }

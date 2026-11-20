@@ -12,7 +12,9 @@
 #                                  series (also after a pull brought new patches); stops
 #                                  when plan9 has commits of its own since the last apply
 #                                  that the series lack (run diff first; FORCE=1
-#                                  overrides), keeps the old plan9 as plan9-before-apply
+#                                  overrides); the old plan9 stays in the branch's
+#                                  reflog (plan9@{1}; the script prints its commit), no
+#                                  backup branch
 set -e
 TOP=$(cd "$(dirname "$0")/.." && pwd)
 P=$TOP/patches
@@ -74,7 +76,8 @@ apply)
 				[ "$have" = "$want" ] || [ -z "$have" ] ||
 					die "$repo: plan9 differs from the patches (run diff first, or FORCE=1)"
 			fi
-			g "$repo" branch -f plan9-before-apply plan9
+			# no backup branch (CLAUDE.md): the old plan9 is the reflog's plan9@{1}
+			echo "rust-patches: $repo: plan9 was $(g "$repo" rev-parse --short plan9) (now plan9@{1} in the reflog)"
 		fi
 		g "$repo" checkout -q -B plan9 "$t"
 		for r in "${parts[@]}"; do
