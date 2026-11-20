@@ -10,6 +10,7 @@
 set -e
 TOP=$(cd "$(dirname "$0")/.." && pwd)
 . "$TOP/scripts/9space-paths.sh"	# GCC_DIR (the distribution's paths.env)
+mkdir -p "$TOP/logs"	# not in git (.gitignore): a fresh checkout has none
 export GCC9BUILD=${GCC9BUILD:-$GCC_DIR/build}	# cmake/plan9.cmake: the cross compilers
 case ${objtype:=amd64} in
 amd64)	B=$TOP/build/llvm-plan9 T=x86_64-unknown-plan9 L= BACKEND=X86 ;;

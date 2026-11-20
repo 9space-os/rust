@@ -26,6 +26,7 @@ case $A in amd64) TG=x86_64-unknown-plan9 ;; 386) TG=i686-unknown-plan9 ;; arm64
 for f in rust-$TG.tgz rust-tools-$TG.tgz; do
 	[ -s "$OUT/$f" ] || { echo "$0: no $OUT/$f: objtype=$A scripts/install.sh" >&2; exit 1; }
 done
+mkdir -p "$TOP/build" "$TOP/logs"	# not in git: a fresh checkout has neither
 T=$(mktemp -d -p "$TOP/build")	# beside out/: tests/guest.sh -D links from it
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/arch" "$T/empty"
@@ -102,7 +103,6 @@ EOF
 args=(-D "/n/arch=$T/arch" -d "/$A/rust=$T/empty" -D "/$A/gnu=$GCC9OUT/$A/$A/gnu"
 	-D "/$A/include=$PLAN9/$A/include" -D "/$A/lib.gcc=$PLAN9/$A/lib.gcc"
 	-x "/$A/plan9.ld=$PLAN9/$A/plan9.ld" -D "/sys/include=$PLAN9/sys/include")
-mkdir -p "$TOP/logs"
 MEM=${MEM:-3072} CMDWAIT=${CMDWAIT:-1800} GUEST_TIMEOUT=${GUEST_TIMEOUT:-3000} "$TOP/tests/guest.sh" "${args[@]}" \
 	-f "$T/t.rc" -- "rc /tests/t.rc" > "$TOP/logs/tools-guest$L.log" 2>&1
 tests="untar-base untar-tools version-rustc version-cargo version-rustdoc version-rustfmt version-cargo-fmt version-clippy-driver

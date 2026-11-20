@@ -8,6 +8,7 @@
 # riscv64gc-unknown-plan9.
 TOP=$(cd "$(dirname "$0")/.." && pwd)
 . "$TOP/scripts/9space-paths.sh"	# TREE, TREE_GCC, GCC_DIR, ... (the distribution's paths.env)
+mkdir -p "$TOP/logs"	# not in git (.gitignore): a fresh checkout has none
 GCC9=${GCC9:-$GCC_DIR}
 # its build directory with the toolchain over gcc's APE (9front branch gcc)
 GCC9BUILD=${GCC9BUILD:-$GCC9/build}

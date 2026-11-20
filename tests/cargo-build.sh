@@ -10,6 +10,7 @@
 set -e
 TOP=$(cd "$(dirname "$0")/.." && pwd)
 . "$TOP/scripts/9space-paths.sh"	# TREE, TREE_GCC, GCC_DIR, ... (the distribution's paths.env)
+mkdir -p "$TOP/logs"	# not in git (.gitignore): a fresh checkout has none
 export PLAN9=${PLAN9:-$TREE}
 GCC9=${GCC9:-$GCC_DIR}
 GCC9OUT=${GCC9OUT:-$GCC9/out}
