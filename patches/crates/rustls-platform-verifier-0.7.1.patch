@@ -1,0 +1,59 @@
+diff -ruN a/Cargo.toml b/Cargo.toml
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -91,10 +91,10 @@
+ [dev-dependencies.webpki-root-certs]
+ version = "1"
+ 
+-[target.'cfg(all(unix, not(target_os = "android"), not(target_vendor = "apple"), not(target_arch = "wasm32")))'.dependencies.rustls-native-certs]
++[target.'cfg(any(all(unix, not(target_os = "android"), not(target_vendor = "apple"), not(target_arch = "wasm32")), target_os = "plan9"))'.dependencies.rustls-native-certs]
+ version = "0.8"
+ 
+-[target.'cfg(all(unix, not(target_os = "android"), not(target_vendor = "apple"), not(target_arch = "wasm32")))'.dependencies.webpki]
++[target.'cfg(any(all(unix, not(target_os = "android"), not(target_vendor = "apple"), not(target_arch = "wasm32")), target_os = "plan9"))'.dependencies.webpki]
+ version = "0.103"
+ default-features = false
+ package = "rustls-webpki"
+diff -ruN a/src/verification/mod.rs b/src/verification/mod.rs
+--- a/src/verification/mod.rs
++++ b/src/verification/mod.rs
+@@ -2,14 +2,14 @@
+ use std::sync::Arc;
+ 
+ #[cfg(all(
+-    any(unix, target_arch = "wasm32"),
++    any(unix, target_arch = "wasm32", target_os = "plan9"),
+     not(target_os = "android"),
+     not(target_vendor = "apple"),
+ ))]
+ mod others;
+ 
+ #[cfg(all(
+-    any(unix, target_arch = "wasm32"),
++    any(unix, target_arch = "wasm32", target_os = "plan9"),
+     not(target_os = "android"),
+     not(target_vendor = "apple"),
+ ))]
+diff -ruN a/src/verification/others.rs b/src/verification/others.rs
+--- a/src/verification/others.rs
++++ b/src/verification/others.rs
+@@ -82,11 +82,14 @@
+             root_store.add(cert)?;
+         }
+ 
+-        #[cfg(all(
+-            unix,
+-            not(target_os = "android"),
+-            not(target_vendor = "apple"),
+-            not(target_arch = "wasm32"),
++        #[cfg(any(
++            all(
++                unix,
++                not(target_os = "android"),
++                not(target_vendor = "apple"),
++                not(target_arch = "wasm32"),
++            ),
++            target_os = "plan9",
+         ))]
+         {
+             let result = rustls_native_certs::load_native_certs();

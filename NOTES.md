@@ -704,3 +704,27 @@ The tree's `tests/winit` (multiwin) checks the three kinds with their pixels.
   only, so the contents came out a title bar short. Now the frame's extra
   (wctl's rectangle minus the contents, `frame_extra`), 2x the border
   without it (rio).
+
+## The browser's crates (2026-11-20)
+
+The user: "crates werden in toolchain/rust/crates verwaltet, das gilt auch für den
+browser", and the rule: the crates that are downloaded from crates.io live here; the
+crates Servo brings itself (its own components, its git sources such as stylo) stay in
+9space's `browser/`. One exception the user chose: mozjs/mozjs_sys, a crates.io crate in
+Servo's lock, stays in `browser/mozjs`, from servo/mozjs' git archive (a whole engine:
+SpiderMonkey's configure, the JIT's port; git history for rebases). The crates.io crates the browser (Servo of the nightly 2026-11-19,
+servo/servo 9f8bb566) changes for plan9, from the Servo study, here as all others:
+dlib 0.5.3, imsz 0.4.1, inventory 0.3.25, ipc-channel 0.23.1, libsqlite3-sys 0.36.0,
+mozangle 0.7.1, rustls-platform-verifier 0.7.1, surfman 0.14.0, webdriver 0.54.0,
+wr_glyph_rasterizer 0.70.1 (`patches/crates`, `cargo-plan9.toml.in`). libsqlite3-sys and
+rustls-platform-verifier stand beside the versions patched before (0.38.1, 0.5.3) under
+keys of their own. Also `p9win` in `[patch.crates-io]`, for programs outside this
+repository that name it by version (the browser's webfs-rs). Their licences:
+`browser/LICENSES.md`. webdriver and wr_glyph_rasterizer are MPL-2.0, so their patches
+are too: the first MPL files here (every other crate patched here is permissive), under
+the user's exception for the browser (CLAUDE.9space.md, "Licences"). They never go into
+the tree: `sys/src/rust/CRATES` names the tree's own, and `scripts/rust/crates.sh`
+copies only those.
+Checked before the commit: `crates-patch.sh init` and `diff` write all 55 patches byte for
+byte; cargo's workspace (build-cargo.sh) and tests/crates resolve offline to the same
+packages as before, only the `[[patch.unused]]` list of their lockfiles grows.

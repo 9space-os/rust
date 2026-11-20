@@ -1,0 +1,54 @@
+diff -ruN a/Cargo.toml b/Cargo.toml
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -39,5 +39,6 @@
+ name = "dlib"
+ path = "src/lib.rs"
+ 
+-[dependencies.libloading]
++# 9space (Plan 9): none (no dynamic libraries there)
++[target.'cfg(not(target_os = "plan9"))'.dependencies.libloading]
+ version = ">=0.7, <0.9"
+diff -ruN a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -146,10 +146,15 @@
+ //! ```
+ #![warn(missing_docs)]
+ 
++// 9space (Plan 9): no dynamic libraries, and none to come: no libloading; the
++// external_library! macro's static branch (extern blocks, linked) is all there is
++#[cfg(not(target_os = "plan9"))]
+ extern crate libloading;
+ 
++#[cfg(not(target_os = "plan9"))]
+ pub use libloading::Error as LibLoadingError;
+ #[doc(hidden)]
++#[cfg(not(target_os = "plan9"))]
+ pub use libloading::{Library, Symbol};
+ 
+ /// Macro for generically invoking a FFI function
+@@ -255,6 +260,7 @@
+     ///
+     /// Includes the error reported by `libloading` when trying to
+     /// open the library.
++    #[cfg(not(target_os = "plan9"))]
+     CantOpen(LibLoadingError),
+     /// Some required symbol was missing in the library
+     MissingSymbol(&'static str),
+@@ -263,6 +269,7 @@
+ impl std::error::Error for DlError {
+     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+         match *self {
++            #[cfg(not(target_os = "plan9"))]
+             DlError::CantOpen(ref e) => Some(e),
+             DlError::MissingSymbol(_) => None,
+         }
+@@ -272,6 +279,7 @@
+ impl std::fmt::Display for DlError {
+     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+         match *self {
++            #[cfg(not(target_os = "plan9"))]
+             DlError::CantOpen(ref e) => write!(f, "Could not open the requested library: {}", e),
+             DlError::MissingSymbol(s) => write!(f, "The requested symbol was missing: {}", s),
+         }

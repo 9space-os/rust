@@ -1,0 +1,30 @@
+diff -ruN a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -633,6 +633,7 @@
+     }
+ }
+ 
++#[cfg(any(target_family="unix", target_family="windows"))]
+ impl Imsz for std::io::Stdin {
+     #[inline]
+     fn imsz(self) -> ImResult<ImInfo> {
+@@ -640,6 +641,18 @@
+     }
+ }
+ 
++// 9space (Plan 9): neither family; stdin through its lock, a BufRead
++#[cfg(not(any(target_family="unix", target_family="windows")))]
++impl Imsz for std::io::Stdin {
++    #[inline]
++    fn imsz(self) -> ImResult<ImInfo> {
++        // no Seek on stdin: all of it, then a Cursor
++        let mut buf = Vec::new();
++        std::io::Read::read_to_end(&mut self.lock(), &mut buf)?;
++        return imsz_from_reader(&mut std::io::Cursor::new(buf));
++    }
++}
++
+ #[cfg(any(target_family="unix", target_family="windows"))]
+ impl Imsz for &std::io::Stdin {
+     /// WARNING: This looses already buffered input!

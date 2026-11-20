@@ -1,0 +1,291 @@
+diff -ruN a/build.rs b/build.rs
+--- a/build.rs
++++ b/build.rs
+@@ -18,6 +18,8 @@
+         windows_platform: { target_os = "windows" },
+         apple: { any(target_os = "ios", target_os = "macos") },
+         free_unix: { all(unix, not(apple), not(android_platform), not(target_os = "emscripten"), not(ohos_platform)) },
++        // 9space (Plan 9): no cfg(unix); Mesa's EGL linked statically, surfaceless by default
++        plan9_platform: { target_os = "plan9" },
+ 
+         // Native displays.
+         x11_platform: { all(free_unix, feature = "sm-x11") },
+@@ -43,6 +45,7 @@
+         || (target_os == "windows" && cfg!(feature = "sm-angle"))
+         || target_env == "ohos"
+         || target_family.as_ref().is_some_and(|f| f == "unix")
++        || target_os == "plan9"
+     {
+         let mut file = File::create(dest.join("egl_bindings.rs")).unwrap();
+         let registry = Registry::new(Api::Egl, (1, 5), Profile::Core, Fallbacks::All, []);
+diff -ruN a/src/base/egl/device.rs b/src/base/egl/device.rs
+--- a/src/base/egl/device.rs
++++ b/src/base/egl/device.rs
+@@ -2,7 +2,7 @@
+ 
+ use crate::egl::Egl;
+ 
+-#[cfg(not(target_os = "windows"))]
++#[cfg(not(any(target_os = "windows", target_os = "plan9")))]
+ use libc::{dlopen, dlsym, RTLD_LAZY};
+ use std::ffi::{CStr, CString};
+ use std::mem;
+@@ -29,7 +29,7 @@
+ #[cfg(not(any(target_os = "windows", target_os = "macos", target_env = "ohos")))]
+ static EGL_POTENTIAL_SO_NAMES: [&CStr; 2] = [c"libEGL.so.1", c"libEGL.so"];
+ 
+-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
++#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "plan9")))]
+ static EGL_LIBRARY: LazyLock<EGLLibraryWrapper> = LazyLock::new(|| {
+     for soname in EGL_POTENTIAL_SO_NAMES {
+         unsafe {
+@@ -59,7 +59,27 @@
+     }
+ }
+ 
+-#[cfg(not(target_os = "windows"))]
++// 9space (Plan 9): no dlopen; Mesa's EGL is in the static libvulkan.a (with GL and
++// Vulkan), linked after us with what it needs (as wgpu-hal's plan9 patch does). Every
++// EGL function, the core ones too, through eglGetProcAddress
++// (EGL_KHR_get_all_proc_addresses, which Mesa has).
++#[cfg(target_os = "plan9")]
++fn get_proc_address(symbol_name: &str) -> *const c_void {
++    #[link(name = "vulkan")]
++    #[link(name = "draw")]
++    #[link(name = "9")]
++    #[link(name = "fmt")]
++    #[link(name = "utf")]
++    #[link(name = "stdc++")]
++    #[link(name = "z")] // Mesa's util (crc32, compression); the tree's libz since libvulkan.a dropped its copy
++    unsafe extern "C" {
++        fn eglGetProcAddress(procname: *const std::os::raw::c_char) -> *const c_void;
++    }
++    let symbol_name: CString = CString::new(symbol_name).unwrap();
++    unsafe { eglGetProcAddress(symbol_name.as_ptr()) }
++}
++
++#[cfg(not(any(target_os = "windows", target_os = "plan9")))]
+ fn get_proc_address(symbol_name: &str) -> *const c_void {
+     unsafe {
+         let symbol_name: CString = CString::new(symbol_name).unwrap();
+diff -ruN a/src/base/mod.rs b/src/base/mod.rs
+--- a/src/base/mod.rs
++++ b/src/base/mod.rs
+@@ -1,6 +1,6 @@
+ //! Shared support code that can be used by multiple Surfman backends.
+ 
+-#[cfg(any(android_platform, angle, free_unix, ohos_platform))]
++#[cfg(any(android_platform, angle, free_unix, ohos_platform, plan9_platform))]
+ pub(crate) mod egl;
+ 
+ #[cfg(macos_platform)]
+diff -ruN a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -29,7 +29,7 @@
+ pub mod hardware_buffer;
+ mod info;
+ pub mod macros;
+-#[cfg(free_unix)]
++#[cfg(any(free_unix, plan9_platform))]
+ pub mod mesa_surfaceless;
+ pub mod multi;
+ mod renderbuffers;
+@@ -55,6 +55,9 @@
+ pub use wayland as default;
+ #[cfg(all(windows_platform, not(angle_default)))]
+ pub use wgl as default;
++// 9space: Mesa's EGL surfaceless platform (windows: EGL's plan9 platform, to come)
++#[cfg(plan9_platform)]
++pub use mesa_surfaceless as default;
+ 
+ pub use crate::context::{ContextAttributeFlags, ContextAttributes, ContextID};
+ pub use crate::error::{Error, WindowingApiError};
+@@ -79,7 +82,8 @@
+     target_os = "android",
+     target_env = "ohos",
+     all(target_os = "windows", feature = "sm-angle"),
+-    unix
++    unix,
++    target_os = "plan9"
+ ))]
+ #[allow(non_camel_case_types)]
+ #[allow(clippy::all)]
+diff -ruN a/src/mesa_surfaceless/connection.rs b/src/mesa_surfaceless/connection.rs
+--- a/src/mesa_surfaceless/connection.rs
++++ b/src/mesa_surfaceless/connection.rs
+@@ -38,12 +38,20 @@
+     pub fn new() -> Result<Connection, Error> {
+         unsafe {
+             EGL_FUNCTIONS.with(|egl| {
+-                let egl_display_attributes = [egl::NONE as EGLAttrib];
+-                let egl_display = egl.GetPlatformDisplay(
+-                    EGL_PLATFORM_SURFACELESS_MESA,
+-                    egl::DEFAULT_DISPLAY as *mut c_void,
+-                    egl_display_attributes.as_ptr(),
+-                );
++                // 9space (Plan 9): the default display, EGL's native plan9 platform (Zink
++                // without a DRM device, as tests/gpu/gltest); Mesa's surfaceless platform
++                // looks for DRM render nodes, which Plan 9 has none of
++                #[cfg(target_os = "plan9")]
++                let egl_display = egl.GetDisplay(egl::DEFAULT_DISPLAY as _);
++                #[cfg(not(target_os = "plan9"))]
++                let egl_display = {
++                    let egl_display_attributes = [egl::NONE as EGLAttrib];
++                    egl.GetPlatformDisplay(
++                        EGL_PLATFORM_SURFACELESS_MESA,
++                        egl::DEFAULT_DISPLAY as *mut c_void,
++                        egl_display_attributes.as_ptr(),
++                    )
++                };
+                 if egl_display == egl::NO_DISPLAY {
+                     return Err(Error::ConnectionFailed);
+                 }
+@@ -133,11 +141,25 @@
+     }
+ 
+     /// Opens the display connection corresponding to the given `DisplayHandle`.
++    #[cfg(not(target_os = "plan9"))]
+     pub fn from_display_handle(_: raw_window_handle::DisplayHandle) -> Result<Connection, Error> {
+         Err(Error::IncompatibleNativeWidget)
+     }
+ 
++    /// Opens the display connection corresponding to the given `DisplayHandle`.
++    /// 9space: a plan9 display handle is the default display (EGL's plan9 platform).
++    #[cfg(target_os = "plan9")]
++    pub fn from_display_handle(
++        handle: raw_window_handle::DisplayHandle,
++    ) -> Result<Connection, Error> {
++        match handle.as_raw() {
++            raw_window_handle::RawDisplayHandle::Plan9(_) => Connection::new(),
++            _ => Err(Error::IncompatibleRawDisplayHandle),
++        }
++    }
++
+     /// Create a native widget from a raw pointer
++    #[cfg(not(target_os = "plan9"))]
+     pub unsafe fn create_native_widget_from_ptr(
+         &self,
+         _raw: *mut c_void,
+@@ -146,7 +168,19 @@
+         NativeWidget
+     }
+ 
++    /// Create a native widget from a raw pointer (9space: the process's own window; the
++    /// pointer is not used)
++    #[cfg(target_os = "plan9")]
++    pub unsafe fn create_native_widget_from_ptr(
++        &self,
++        _raw: *mut c_void,
++        size: Size2D<i32>,
++    ) -> NativeWidget {
++        NativeWidget { size }
++    }
++
+     /// Create a native widget type from the given `WindowHandle`.
++    #[cfg(not(target_os = "plan9"))]
+     #[inline]
+     pub fn create_native_widget_from_window_handle(
+         &self,
+@@ -155,4 +189,19 @@
+     ) -> Result<NativeWidget, Error> {
+         Err(Error::IncompatibleNativeWidget)
+     }
++
++    /// Create a native widget type from the given `WindowHandle` (9space: the process's own
++    /// window of wsys or rio).
++    #[cfg(target_os = "plan9")]
++    #[inline]
++    pub fn create_native_widget_from_window_handle(
++        &self,
++        handle: raw_window_handle::WindowHandle,
++        size: Size2D<i32>,
++    ) -> Result<NativeWidget, Error> {
++        match handle.as_raw() {
++            raw_window_handle::RawWindowHandle::Plan9(_) => Ok(NativeWidget { size }),
++            _ => Err(Error::IncompatibleNativeWidget),
++        }
++    }
+ }
+diff -ruN a/src/mesa_surfaceless/device.rs b/src/mesa_surfaceless/device.rs
+--- a/src/mesa_surfaceless/device.rs
++++ b/src/mesa_surfaceless/device.rs
+@@ -54,6 +54,13 @@
+     }
+ 
+     pub(crate) fn set_environment_variables(&self) {
++        // 9space (Plan 9): the environment is /env, shared with the shell and every process
++        // started after this one: LIBGL_ALWAYS_SOFTWARE set here made each later GL program ask
++        // Zink for a CPU device (9space's libvulkan.a has none) and fail. Mesa takes its one
++        // device (Zink on the GPU) for every adapter; nothing to select here.
++        if cfg!(target_os = "plan9") {
++            return;
++        }
+         match *self {
+             Adapter::Hardware | Adapter::HardwarePrime => {
+                 env::remove_var(MESA_SOFTWARE_RENDERING_ENV_VAR);
+@@ -149,7 +156,12 @@
+                 attributes,
+                 &[
+                     egl::SURFACE_TYPE as EGLint,
+-                    egl::PBUFFER_BIT as EGLint,
++                    // 9space: window surfaces too (EGL's plan9 platform; servoshell's window)
++                    if cfg!(target_os = "plan9") {
++                        (egl::PBUFFER_BIT | egl::WINDOW_BIT) as EGLint
++                    } else {
++                        egl::PBUFFER_BIT as EGLint
++                    },
+                     egl::RENDERABLE_TYPE as EGLint,
+                     egl::OPENGL_BIT as EGLint,
+                     egl::COLOR_BUFFER_TYPE as EGLint,
+@@ -369,7 +381,28 @@
+     ) -> Result<Surface, Error> {
+         match surface_type {
+             SurfaceType::Generic { size } => self.create_generic_surface(context, &size),
++            #[cfg(not(target_os = "plan9"))]
+             SurfaceType::Widget { .. } => Err(Error::UnsupportedOnThisPlatform),
++            // 9space: an EGL window surface on the process's own window ("" for EGL's plan9
++            // platform; Zink's kopper presents it through VK_PLAN9_surface)
++            #[cfg(target_os = "plan9")]
++            SurfaceType::Widget { native_widget } => {
++                static OWN_WINDOW: &std::ffi::CStr = c"";
++                let context_descriptor = self.context_descriptor(context);
++                let egl_config = unsafe {
++                    context::egl_config_from_id(
++                        self.native_connection.egl_display,
++                        context_descriptor.egl_config_id,
++                    )
++                };
++                Ok(Surface(EGLBackedSurface::new_window(
++                    self.native_connection.egl_display,
++                    egl_config,
++                    OWN_WINDOW.as_ptr() as *mut c_void,
++                    context.0.id,
++                    &native_widget.size,
++                )))
++            }
+         }
+     }
+ 
+diff -ruN a/src/mesa_surfaceless/surface.rs b/src/mesa_surfaceless/surface.rs
+--- a/src/mesa_surfaceless/surface.rs
++++ b/src/mesa_surfaceless/surface.rs
+@@ -38,9 +38,18 @@
+ pub struct SurfaceTexture(pub(crate) EGLSurfaceTexture);
+ 
+ /// A placeholder wrapper for a native widget.
++#[cfg(not(target_os = "plan9"))]
+ #[derive(Clone)]
+ pub struct NativeWidget;
+ 
++/// 9space: the process's own window (wsys or rio; EGL's plan9 platform takes "" for it and
++/// reads /dev/winname at each frame), with the size it had when the widget was made.
++#[cfg(target_os = "plan9")]
++#[derive(Clone)]
++pub struct NativeWidget {
++    pub(crate) size: euclid::default::Size2D<i32>,
++}
++
+ unsafe impl Send for Surface {}
+ 
+ /// Represents the CPU view of the pixel data of this surface.

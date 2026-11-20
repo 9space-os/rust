@@ -1,0 +1,19 @@
+diff -ruN a/src/platform/mod.rs b/src/platform/mod.rs
+--- a/src/platform/mod.rs
++++ b/src/platform/mod.rs
+@@ -51,6 +51,7 @@
+     target_os = "android",
+     target_os = "ios",
+     target_os = "wasi",
++    target_os = "plan9", // 9space: in-process (single-process Servo)
+     target_os = "unknown"
+ ))]
+ mod inprocess;
+@@ -59,6 +60,7 @@
+     target_os = "android",
+     target_os = "ios",
+     target_os = "wasi",
++    target_os = "plan9", // 9space: in-process (single-process Servo)
+     target_os = "unknown"
+ ))]
+ mod os {

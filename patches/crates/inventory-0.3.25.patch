@@ -1,0 +1,11 @@
+diff -ruN a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -544,6 +544,7 @@
+                         target_os = "netbsd",
+                         target_os = "nto",
+                         target_os = "openbsd",
++                        target_os = "plan9", // 9space: ELF, its startup runs .init_array (APE's own constructors too)
+                         target_os = "redox",
+                         target_os = "vxworks",
+                         target_os = "none",

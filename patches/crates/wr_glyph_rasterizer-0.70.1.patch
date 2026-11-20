@@ -1,0 +1,69 @@
+diff -ruN a/Cargo.toml b/Cargo.toml
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -121,11 +121,11 @@
+ [dev-dependencies.winit]
+ version = "0.30"
+ 
+-[target.'cfg(any(target_os = "android", all(unix, not(any(target_os = "macos", target_os = "ios")))))'.dependencies.freetype]
++[target.'cfg(any(target_os = "android", target_os = "plan9", all(unix, not(any(target_os = "macos", target_os = "ios")))))'.dependencies.freetype]
+ version = "0.8"
+ default-features = false
+ 
+-[target.'cfg(any(target_os = "android", all(unix, not(any(target_os = "macos", target_os = "ios")))))'.dependencies.libc]
++[target.'cfg(any(target_os = "android", target_os = "plan9", all(unix, not(any(target_os = "macos", target_os = "ios")))))'.dependencies.libc]
+ version = "0.2"
+ 
+ [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies.core-foundation]
+diff -ruN a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -41,7 +41,7 @@
+ pub mod platform {
+     #[cfg(any(target_os = "macos", target_os = "ios"))]
+     pub use crate::platform::macos::font;
+-    #[cfg(any(target_os = "android", all(unix, not(any(target_os = "ios", target_os = "macos")))))]
++    #[cfg(any(target_os = "android", all(unix, not(any(target_os = "ios", target_os = "macos"))), target_os = "plan9" /* 9space: FreeType */))]
+     pub use crate::platform::unix::font;
+     #[cfg(target_os = "windows")]
+     pub use crate::platform::windows::font;
+@@ -50,7 +50,7 @@
+     pub mod macos {
+         pub mod font;
+     }
+-    #[cfg(any(target_os = "android", all(unix, not(any(target_os = "macos", target_os = "ios")))))]
++    #[cfg(any(target_os = "android", all(unix, not(any(target_os = "macos", target_os = "ios"))), target_os = "plan9"))]
+     pub mod unix {
+         pub mod font;
+     }
+diff -ruN a/src/platform/unix/font.rs b/src/platform/unix/font.rs
+--- a/src/platform/unix/font.rs
++++ b/src/platform/unix/font.rs
+@@ -26,7 +26,7 @@
+ use crate::rasterizer::{FontInstance, GlyphFormat, GlyphKey};
+ use crate::rasterizer::{GlyphRasterError, GlyphRasterResult, RasterizedGlyph};
+ use crate::types::FastHashMap;
+-#[cfg(any(not(any(target_os = "android", target_env = "ohos")), feature = "dynamic_freetype"))]
++#[cfg(any(not(any(target_os = "android", target_env = "ohos", target_os = "plan9")), feature = "dynamic_freetype"))]
+ use libc::{dlsym, RTLD_DEFAULT};
+ use libc::free;
+ use std::{cmp, mem, ptr, slice};
+@@ -76,7 +76,7 @@
+ }
+ 
+ // Use dlsym to check for symbols. If not available. just return an unimplemented error.
+-#[cfg(any(not(any(target_os = "android", target_env = "ohos")), feature = "dynamic_freetype"))]
++#[cfg(any(not(any(target_os = "android", target_env = "ohos", target_os = "plan9")), feature = "dynamic_freetype"))]
+ macro_rules! ft_dyn_fn {
+     ($func_name:ident($($arg_name:ident:$arg_type:ty),*) -> FT_Error) => {
+         #[allow(non_snake_case)]
+@@ -99,7 +99,8 @@
+ }
+ 
+ // On Android and OHOS, just statically link in the symbols...
+-#[cfg(all(any(target_os = "android", target_env = "ohos"), not(feature = "dynamic_freetype")))]
++// 9space: Plan 9 links FreeType statically too (the tree's, APE)
++#[cfg(all(any(target_os = "android", target_env = "ohos", target_os = "plan9"), not(feature = "dynamic_freetype")))]
+ macro_rules! ft_dyn_fn {
+     ($($proto:tt)+) => { extern "C" { fn $($proto)+; } }
+ }

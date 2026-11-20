@@ -48,3 +48,16 @@ libssh2-sys = { package = "libssh2-sys", path = "@TOP@/crates/libssh2-sys-0.3.4"
 # cargo (rust/src/tools/cargo/Cargo.lock) locks libc 0.2.186: our libc series (patches/libc,
 # made on 0.2.191, the version of std) on that crate; change both when the series changes
 libc-0_2_186 = { package = "libc", path = "@TOP@/crates/libc-0.2.186" }
+# the browser (9space's browser/: Servo of a nightly, servo/servo 9f8bb566): its crates
+dlib = { package = "dlib", path = "@TOP@/crates/dlib-0.5.3" }
+imsz = { package = "imsz", path = "@TOP@/crates/imsz-0.4.1" }
+inventory = { package = "inventory", path = "@TOP@/crates/inventory-0.3.25" }
+ipc-channel = { package = "ipc-channel", path = "@TOP@/crates/ipc-channel-0.23.1" }
+libsqlite3-sys-0_36_0 = { package = "libsqlite3-sys", path = "@TOP@/crates/libsqlite3-sys-0.36.0" }
+mozangle = { package = "mozangle", path = "@TOP@/crates/mozangle-0.7.1" }
+rustls-platform-verifier-0_7_1 = { package = "rustls-platform-verifier", path = "@TOP@/crates/rustls-platform-verifier-0.7.1" }
+surfman = { package = "surfman", path = "@TOP@/crates/surfman-0.14.0" }
+webdriver = { package = "webdriver", path = "@TOP@/crates/webdriver-0.54.0" }
+wr_glyph_rasterizer = { package = "wr_glyph_rasterizer", path = "@TOP@/crates/wr_glyph_rasterizer-0.70.1" }
+# our own window crate (plan9/p9win) for programs outside this repository (the browser's webfs-rs)
+p9win = { package = "p9win", path = "@TOP@/plan9/p9win" }

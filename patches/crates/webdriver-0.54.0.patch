@@ -1,0 +1,25 @@
+diff -ruN a/src/server.rs b/src/server.rs
+--- a/src/server.rs
++++ b/src/server.rs
+@@ -235,6 +235,21 @@
+     }
+ }
+ 
++// 9space (Plan 9): no tokio signals here; the server ends with the process
++#[cfg(target_os = "plan9")]
++struct ShutdownSignal;
++
++#[cfg(target_os = "plan9")]
++impl ShutdownSignal {
++    fn new() -> Self {
++        ShutdownSignal
++    }
++
++    async fn recv(&mut self) {
++        std::future::pending::<()>().await
++    }
++}
++
+ #[cfg(windows)]
+ struct ShutdownSignal {
+     ctrl_c: Option<tokio::signal::windows::CtrlC>,
