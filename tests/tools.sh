@@ -1,13 +1,13 @@
 #!/bin/bash
 # Rust installed on 9front from scripts/install.sh's archives (rust-T.tgz, rust-tools-T.tgz),
-# unpacked with 9front's tar in the guest as /$objtype/rust (with 9front-gcc's gcc as
+# unpacked with 9front's tar in the guest as /$objtype/rust (with toolchain/gcc's gcc as
 # /$objtype/gnu, the linker), then used as a user would: rustc, cargo,
 # rustdoc, rustfmt and clippy on a new crate. cargo build and run; cargo fmt (--check fails
 # on badly formatted code, passes after cargo fmt); cargo clippy (a lint it must report);
 # cargo doc (the HTML); cargo test with a doc test (rustdoc compiles and runs it on 9front).
-# Prints "name ok" or "name FAIL ...". Log: logs/tools-guest[.386].log.
+# Prints "name ok" or "name FAIL ...". Log: logs/tools-guest[.386|.arm64].log.
 # env: as tests/rustc.sh (GCC9OUT, PLAN9, MEM); OUT: install.sh's output (out/$objtype).
-# objtype=386: i686-unknown-plan9 in a 9pc guest.
+# objtype=386: i686-unknown-plan9 in a 9pc guest; objtype=arm64: aarch64-unknown-plan9.
 set -e
 TOP=$(cd "$(dirname "$0")/.." && pwd)
 . "$TOP/scripts/9space-paths.sh"	# TREE, TREE_GCC, GCC_DIR, ... (the distribution's paths.env)

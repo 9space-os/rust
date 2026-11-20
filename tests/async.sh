@@ -8,9 +8,10 @@
 # needs the network; the host's roots as /sys/lib/tls/ca.pem), tests/crates/tokioproc
 # (tokio::process, tokio::signal over notes; in a note group of its own: it posts to it).
 # Needs the 9front tree with TCP's half close (gcc branch: ctl "shutdown").
-# Prints "name ok" or "name FAIL ...". Log: logs/async-guest[.386].log.
+# Prints "name ok" or "name FAIL ...". Log: logs/async-guest[.386|.arm64|.riscv64].log.
 # objtype=386: i686-unknown-plan9 in a 9pc guest; objtype=arm64: aarch64-unknown-plan9 (qemu);
-# objtype=riscv64: riscv64gc-unknown-plan9 in the qemu virt guest of ../9front-riscv (PLAN9_RISCV).
+# objtype=riscv64: riscv64gc-unknown-plan9 in the qemu virt guest of TREE_RISCV (tree-riscv in
+# paths.env; PLAN9_RISCV overrides).
 set -e
 TOP=$(cd "$(dirname "$0")/.." && pwd)
 . "$TOP/scripts/9space-paths.sh"	# TREE, TREE_GCC, GCC_DIR, ... (the distribution's paths.env)

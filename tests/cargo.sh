@@ -1,10 +1,11 @@
 #!/bin/bash
 # cargo on 9front (scripts/build-cargo.sh's) in the guest: --version, new (libgit2),
 # search (crates.io's API over curl and rustls), fetch (the index, downloads, unpacking,
-# sqlite). 9front has no rustc yet: a stand-in rc script answers cargo's questions with the
-# stage-1 rustc's answers for the target. The guest's CA roots are the host's
+# sqlite). No rustc in this guest (tests/cargo-build.sh has one): a stand-in rc script
+# answers cargo's questions with the stage-1 rustc's answers for the target. The guest's CA roots are the host's
 # (9front has none: /sys/lib/tls/ca.pem). Needs the network. Log: logs/cargo-guest.log.
-# objtype=386: i686-unknown-plan9's cargo in a 9pc guest (log cargo-guest.386.log).
+# objtype=386: i686-unknown-plan9's cargo in a 9pc guest (log cargo-guest.386.log); arm64,
+# riscv64 likewise (cargo-guest.arm64.log, cargo-guest.riscv64.log; riscv64 in TREE_RISCV).
 set -e
 TOP=$(cd "$(dirname "$0")/.." && pwd)
 . "$TOP/scripts/9space-paths.sh"	# TREE, TREE_GCC, GCC_DIR, ... (the distribution's paths.env)

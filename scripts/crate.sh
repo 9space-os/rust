@@ -1,7 +1,8 @@
 #!/bin/bash
-# Copy a crate from cargo's registry into crates/<name>-<version> for its 9front changes,
-# kept in this repository (the first commit of each is the crate as published), and list it
-# in cargo-plan9.toml.in ([patch.crates-io]; cargo --config cargo-plan9.toml, written from it).
+# Copy a crate from cargo's registry into crates/<name>-<version> for its 9front changes
+# (crates/ is not in git: scripts/crates-patch.sh diff writes the changes to
+# patches/crates/<name>-<version>.patch), and list it in cargo-plan9.toml.in
+# ([patch.crates-io]; cargo --config cargo-plan9.toml, written from it).
 # usage: scripts/crate.sh name version
 set -e
 TOP=$(cd -P "$(dirname "$0")/.." && pwd -P)

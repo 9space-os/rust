@@ -24,7 +24,7 @@ Log of the port: `NOTES.md`.
   apply` makes the branches from the tags (`fetch.sh` runs it). `BASE`: the upstream
   commit (rust: the nightly's) or version, for reference.
 - `tests/`: test programs; `tests/guest.sh` runs programs in the 9front guest.
-- `bootstrap.toml.example`: `rust/bootstrap.toml` (`$GCC9`: the 9front-gcc checkout, GCC_DIR; `$RUST9`: this one, RUST_DIR).
+- `bootstrap.toml.example`: `rust/bootstrap.toml` (`$GCC9`: toolchain/gcc, GCC_DIR; `$RUST9`: this one, RUST_DIR).
 
 ## Porting crates
 

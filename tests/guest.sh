@@ -1,5 +1,6 @@
 #!/bin/bash
-# Run programs in the 9front guest (../9front's scripts/guest/boot-cli.sh): the files
+# Run programs in the 9front guest (the tree's scripts/guest/boot-cli.sh; PLAN9, default
+# TREE of paths.env): the files
 # given are copied to /tests; each further argument is one rc command line.
 # -x and -d add a file or a directory to the root (ufs, the host's over 9P: slow for big
 # trees); -D puts a directory on an ext4 disk instead (mkfs.ext4 -d, as the tree's
@@ -62,8 +63,8 @@ cd "$PLAN9"
 # -smp through QEMU_EXTRA: any tree's boot-cli.sh takes that (SMP= keeps one that knows
 # SMP from adding its own)
 smp=${SMP:-4}
-# arm64: one processor; 9front's qemu kernel does not start more (the others wait in
-# _startup's wfe for an event nobody sends; ../9front-gccwt MEMORY.md, "SMP arm64 offen")
+# arm64: one processor unless SMP is set (9front's qemu kernel once started no more: the
+# others waited in _startup's wfe; the tree's 16744578a fixed it, tree/MEMORY.md "arm64 SMP")
 [ "${objtype:-amd64}" != arm64 ] || smp=${SMP:-1}
 # its own process group: if this script ends early (an outer timeout's TERM), the guest
 # (QEMU, ufs) goes with it, or it keeps the ports and the next guest fails

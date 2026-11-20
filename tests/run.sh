@@ -1,10 +1,12 @@
 #!/bin/bash
 # Build the test programs (tests/*.rs) with the stage-1 rustc for x86_64-unknown-plan9 and
-# run them in the 9front guest (../9front's scripts/guest/boot-cli.sh). One line per
-# test: "name ok" or "name FAIL ...". Log: logs/guest-tests.log (386: guest-tests.386.log).
+# run them in the 9front guest (tests/guest.sh: the tree's scripts/guest/boot-cli.sh). One
+# line per test: "name ok" or "name FAIL ...". Log: logs/guest-tests.log (386:
+# guest-tests.386.log; arm64, riscv64 likewise).
 # objtype=386: i686-unknown-plan9 in a 9pc guest (the 9front tree built for 386: PLAN9);
 # objtype=arm64: aarch64-unknown-plan9 in a qemu (arm64) guest (emulated: slow).
-# objtype=riscv64: riscv64gc-unknown-plan9 in a qemu virt guest (../9front-riscv, emulated).
+# objtype=riscv64: riscv64gc-unknown-plan9 in a qemu virt guest (TREE_RISCV, tree-riscv in
+# paths.env; emulated).
 set -e
 TOP=$(cd "$(dirname "$0")/.." && pwd)
 . "$TOP/scripts/9space-paths.sh"	# TREE, TREE_GCC, GCC_DIR, ... (the distribution's paths.env)

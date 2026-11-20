@@ -1,20 +1,20 @@
 #!/bin/bash
 # The Rust toolchain for an installed 9front system, an optional install: the tree
-# out/$objtype/$objtype/rust that goes to /$objtype/rust (as 9front-gcc's
-# out/$objtype/$objtype/gnu goes to /$objtype/gnu), and two archives of it:
+# out/$objtype/$objtype/rust that goes to /$objtype/rust (as toolchain/gcc's (GCC_DIR in
+# paths.env) out/$objtype/$objtype/gnu goes to /$objtype/gnu), and two archives of it:
 #   out/$objtype/rust-T.tgz        rustc, cargo, std (bin/rustc, bin/cargo, lib, README)
 #   out/$objtype/rust-tools-T.tgz  rustdoc, rustfmt, cargo-fmt, clippy-driver, cargo-clippy
 # Paths in them from /, so on 9front:  cd /; tar xzf rust-T.tgz  (9front's tar).
-# ../9front-gccwt's scripts/guest/stage-dist.sh puts the tree on the install CD only if
-# asked (RUST_OUT=out/$objtype).
+# The tree's scripts/guest/stage-dist.sh puts the tree on the install CD only if
+# asked (RUST_OUT=$RUST_DIR/out/$objtype).
 #   bin/rustc               the stage-2 rustc for 9front (static, LLVM inside)
 #   bin/cargo               scripts/build-cargo.sh's
 #   bin/rustdoc, rustfmt, cargo-fmt, clippy-driver, cargo-clippy   if built (x build
-#                           --stage 2 --host T --target T src/tools/...; NOTES Teil 13)
+#                           --stage 2 --host T --target T src/tools/...; NOTES.md Part 13)
 #   lib/rustlib/T/lib       std and its crates for T (rlib and rmeta)
 #   README                  how to use it
 # All stripped. rustc finds its sysroot from its own path (/$objtype/rust); it links with
-# 9front-gcc's gcc (/$objtype/gnu), which must be installed too.
+# toolchain/gcc's gcc (/$objtype/gnu), which must be installed too.
 # usage: [objtype=386|arm64] scripts/install.sh [outdir]   (default out/$objtype)
 set -e
 TOP=$(cd "$(dirname "$0")/.." && pwd)

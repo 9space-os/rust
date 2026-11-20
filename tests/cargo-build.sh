@@ -14,7 +14,8 @@ export PLAN9=${PLAN9:-$TREE}
 GCC9=${GCC9:-$GCC_DIR}
 GCC9OUT=${GCC9OUT:-$GCC9/out}
 GCC9BUILD=${GCC9BUILD:-$GCC9/build}
-# objtype=386: i686-unknown-plan9's rustc in a 9pc guest (logs/cargo-build-guest.386.log)
+# objtype=386: i686-unknown-plan9's rustc in a 9pc guest (logs/cargo-build-guest.386.log);
+# arm64 likewise (logs/cargo-build-guest.arm64.log)
 case ${objtype:=amd64} in
 amd64)	TG=x86_64-unknown-plan9 XT=x86_64-pc-plan9 L= ;;
 386)	TG=i686-unknown-plan9 XT=i686-pc-plan9 L=.386 ;;

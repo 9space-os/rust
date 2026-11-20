@@ -1,6 +1,7 @@
 #!/bin/bash
 # Build cargo (rust/src/tools/cargo) for x86_64-unknown-plan9 with the stage-1 rustc, the
-# crates of crates/ (cargo-plan9.toml) and 9front-gcc's cross gcc for the C in it (APE).
+# crates of crates/ (cargo-plan9.toml) and the cross gcc of toolchain/gcc (GCC_DIR in
+# paths.env; GCC9, GCC9BUILD override) for the C in it (APE).
 # Result: tests/out/cargo-port/x86_64-unknown-plan9/release/cargo; log: logs/cargo-port.log.
 # objtype=386: for i686-unknown-plan9 (tests/out/cargo-port/i686-unknown-plan9/release/cargo,
 # logs/cargo-port.386.log); objtype=arm64 likewise for aarch64-unknown-plan9, objtype=riscv64 for

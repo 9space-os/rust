@@ -3,7 +3,8 @@
 # (BuildVariables.inc, LibraryDependencies.inc), linked with build/llvm-native-tools' Support.
 # It finds its libraries relative to itself: build/llvm-plan9/bin/llvm-config, for bootstrap's
 # [target.x86_64-unknown-plan9] llvm-config. objtype=386: build/llvm-plan9.386's
-# ([target.i686-unknown-plan9]).
+# ([target.i686-unknown-plan9]); objtype=arm64: build/llvm-plan9.arm64's
+# ([target.aarch64-unknown-plan9]).
 set -e
 TOP=$(cd "$(dirname "$0")/.." && pwd)
 case ${objtype:-amd64} in

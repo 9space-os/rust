@@ -6,7 +6,8 @@
 # net tests (127.1 and ::1). Its output is this script's, its status too (a failure: 101, as the harness).
 # usage: tests/std-runner.sh binary [args...]
 # env: MEM (guest MB, 2048), SMP (4), STDTEST_TIMEOUT (seconds per binary, 900; riscv64 3600),
-#      PLAN9 (the system booted; default ../9front-gccwt), STDTEST_LOG (all guest logs, appended)
+#      PLAN9 (the system booted; default TREE; riscv64: PLAN9_RISCV, default TREE_RISCV),
+#      STDTEST_LOG (all guest logs, appended)
 TOP=$(cd "$(dirname "$0")/.." && pwd)
 . "$TOP/scripts/9space-paths.sh"	# TREE, TREE_GCC, GCC_DIR, ... (the distribution's paths.env)
 bin=$1
