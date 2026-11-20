@@ -1,4 +1,9 @@
 #!/bin/rc
+# csstress.rc, in a guest: /tests/csstress (tools/csstress.c: dials through
+# /net/cs from many procs at once) with 12, then 50 procs of 200 dials each;
+# one that fails prints STUCK and the states of cs, of the TCP conversations
+# and of csstress' procs (st).  It reproduced the loopback connect hang
+# patch-upstream 0025 fixed (NOTES.md, 2026-11-11).
 fn st {
 	echo '== cs procs'
 	ps | grep ' cs$| cs ' 

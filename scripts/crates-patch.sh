@@ -50,7 +50,9 @@ diff)
 	done
 	ls "$P"
 	# native libc functions declared by hand: without __p9_ they are APE's (README.md)
-	nat=$(nm -g --defined-only "${PLAN9:-$TREE}/amd64/lib.gcc/libp9.a" 2>/dev/null |
+	lp=${PLAN9:-$TREE}/amd64/lib.gcc/libp9.a
+	[ -f "$lp" ] || echo "crates-patch: no $lp (the tree's amd64 build): the declarations are not checked" >&2
+	nat=$(nm -g --defined-only "$lp" 2>/dev/null |
 		awk 'NF == 3 && $3 ~ /^__p9_/ {print substr($3, 6)}' | sort -u)
 	for p in "$P"/*.patch; do
 		awk '/^\+.*extern "C"/ {ext = 1}

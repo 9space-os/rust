@@ -65,7 +65,7 @@ tr '\0' '\n' < "$stamp" | sed -n 's|^t.*/||p' | grep -E '\.(rlib|rmeta)$' |
 	while read -r f; do cp "$std/$f" "$D/lib/rustlib/$T/lib/"; done
 version=$(cd "$TOP/rust" && git log -1 --format='%h %cd' --date=short)
 sed "s/@objtype@/$A/g; s/@target@/$T/g; s/@version@/$version/" > "$D/README" <<'EOF'
-Rust for 9front (@target@), from 9front-rust (rust @version@)
+Rust for 9front (@target@), from 9space's Rust port (github.com/9space-os/rust; rust @version@)
 
 	bind -b /@objtype@/gnu/bin /bin		# gcc: rustc links with it
 	bind -b /@objtype@/rust/bin /bin
@@ -76,7 +76,7 @@ bin/	rustc, cargo, and the tools that were built (rustdoc, rustfmt,
 lib/rustlib/@target@/lib	std and its crates
 
 rustc finds this tree from its own path (/@objtype@/rust). Programs link
-with 9front-gcc's gcc against /@objtype@/lib.gcc (libp9.a, APE) and
+with 9space's gcc (github.com/9space-os/gcc) against /@objtype@/lib.gcc (libp9.a, APE) and
 /@objtype@/plan9.ld; std uses 9front's own libc (not APE). cargo reaches
 crates.io over https: it needs the CA roots in /sys/lib/tls/ca.pem
 (9front ships none). Proc macros run as programs (no dylibs on Plan 9).

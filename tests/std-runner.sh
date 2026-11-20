@@ -6,7 +6,7 @@
 # net tests (127.1 and ::1). Its output is this script's, its status too (a failure: 101, as the harness).
 # usage: tests/std-runner.sh binary [args...]
 # env: MEM (guest MB, 2048), SMP (4), STDTEST_TIMEOUT (seconds per binary, 900; riscv64 3600),
-#      PLAN9 (the system booted; default TREE; riscv64: PLAN9_RISCV, default TREE_RISCV),
+#      PLAN9 (the system booted; default TREE; riscv64: PLAN9_RISCV, else TREE_RISCV),
 #      STDTEST_LOG (all guest logs, appended)
 TOP=$(cd "$(dirname "$0")/.." && pwd)
 . "$TOP/scripts/9space-paths.sh"	# TREE, TREE_GCC, GCC_DIR, ... (the distribution's paths.env)
@@ -20,7 +20,7 @@ case $(file -b "$bin") in
 esac
 # riscv64: its own tree (branch riscv); under TCG its std unit tests take ~2600 s (the fs
 # tests that make thousands of files)
-[ $objtype != riscv64 ] || export PLAN9=${PLAN9_RISCV:-$TREE_RISCV}
+[ $objtype != riscv64 ] || export PLAN9=${PLAN9:-${PLAN9_RISCV:-$TREE_RISCV}}	# PLAN9 wins, as in run.sh
 [ $objtype != riscv64 ] || STDTEST_TIMEOUT=${STDTEST_TIMEOUT:-3600}
 export PLAN9=${PLAN9:-$TREE}
 name=$(basename "$bin")

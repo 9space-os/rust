@@ -71,8 +71,8 @@ apply)
 			# there, so the series (perhaps new from a pull) replaces it without a check
 			applied=$(g "$repo" rev-parse -q --verify refs/9space/applied || true)
 			if [ "$FORCE" != 1 ] && [ "$(g "$repo" rev-parse plan9)" != "$applied" ]; then
-				want=$(for r in "${parts[@]}"; do set -- $r; [ "$2" = "$repo" ] && cat "$P/$1"/*.patch; done | ids "$d")
-				have=$(g "$repo" log -p --reverse "$t..plan9" | ids "$d")
+				want=$(for r in "${parts[@]}"; do set -- $r; [ "$2" = "$repo" ] && cat "$P/$1"/*.patch; done | ids)
+				have=$(g "$repo" log -p --reverse "$t..plan9" | ids)
 				[ "$have" = "$want" ] || [ -z "$have" ] ||
 					die "$repo: plan9 differs from the patches (run diff first, or FORCE=1)"
 			fi
