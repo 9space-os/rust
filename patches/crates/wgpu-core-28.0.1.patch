@@ -27,3 +27,33 @@ diff -ruN a/Cargo.toml b/Cargo.toml
  vulkan-portability = ["wgpu-core-deps-apple/vulkan-portability"]
  webgl = [
      "wgpu-core-deps-wasm/webgl",
+diff -ruN a/src/present.rs b/src/present.rs
+--- a/src/present.rs
++++ b/src/present.rs
+@@ -285,7 +285,13 @@
+ 
+         let device = &present.device;
+ 
+-        device.check_is_valid()?;
++        // 9front: a device lost (its driver gone) presents nothing, but the
++        // texture acquired goes all the same: kept, it holds the swapchain's
++        // acquire semaphore, and destroying the swapchain then panics
++        if let Err(e) = device.check_is_valid() {
++            present.acquired_texture = None;
++            return Err(e.into());
++        }
+         let queue = device.get_queue().unwrap();
+ 
+         let texture = present
+@@ -335,7 +341,10 @@
+ 
+         let device = &present.device;
+ 
+-        device.check_is_valid()?;
++        if let Err(e) = device.check_is_valid() {
++            present.acquired_texture = None; // 9front: as in present
++            return Err(e.into());
++        }
+ 
+         let texture = present
+             .acquired_texture
