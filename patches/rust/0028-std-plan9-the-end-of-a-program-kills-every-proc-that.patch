@@ -1,0 +1,155 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stefan Hertenberger <erde74@gmail.com>
+Date: Sat, 21 Nov 2026 03:58:14 +0100
+Subject: [PATCH 28/28] std: plan9: the end of a program kills every proc that
+ can hold malloc's lock: a proc's start and end under ALL_LOCK, EXITING
+
+end_program kills the threads on ALL one by one; one killed inside
+malloc dies with its lock held. A proc off the list was not killed:
+a thread that had unlinked itself in free_thread_data and then freed
+its keys, its data and its packet, a new one before new_thread_data
+linked it after its mallocz. It slept on malloc's lock for ever (the
+browser's servoshot stayed after its exit, 2 in 90 realweb runs).
+Now end_program and __plan9_abort set EXITING under ALL_LOCK before
+the kills; new_thread_data mallocs and links under ALL_LOCK, and
+end_thread (was free_thread_data, for __rust_plan9_threadstart and
+cproc_child) unlinks, frees and hands over the packet under it, then
+_exits. A proc that finds EXITING ends without malloc. Nothing takes
+ALL_LOCK while it holds malloc's lock.
+
+tests/exitrace (toolchain/rust): before 101 procs left of 500 runs,
+after none (amd64 twice, 386).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ library/std/src/sys/pal/plan9/proc.rs | 53 +++++++++++++++++++--------
+ 1 file changed, 38 insertions(+), 15 deletions(-)
+
+diff --git a/library/std/src/sys/pal/plan9/proc.rs b/library/std/src/sys/pal/plan9/proc.rs
+index 656e49ca279573f78ad3517f9d739768f70f2d01..afc34dcd5e0963a0f35329705568e568cfd49385 100644
+--- a/library/std/src/sys/pal/plan9/proc.rs
++++ b/library/std/src/sys/pal/plan9/proc.rs
+@@ -59,6 +59,13 @@ static PRIVTOP: AtomicUsize = AtomicUsize::new(0);
+ /// The `privalloc` slot of [`ThreadData`].
+ static PRIV_SLOT: AtomicPtr<*mut c_void> = AtomicPtr::new(ptr::null_mut());
+ static ALL: AtomicPtr<ThreadData> = AtomicPtr::new(ptr::null_mut());
++/// The program ends: set under `ALL_LOCK` by [`end_program`] and `__plan9_abort` before
++/// they kill the threads on `ALL`. A proc takes malloc's lock at its start and its end only
++/// under `ALL_LOCK` and while on `ALL` (or before this is set): the end kills it there, or
++/// it sees this and ends without malloc. Else a proc off the list (one starting, one done)
++/// was not killed and slept for ever on malloc's lock, held by a thread the end killed in
++/// malloc (servoshot's procs stayed after its exit).
++static EXITING: AtomicBool = AtomicBool::new(false);
+ static ALL_LOCK: SpinLock = SpinLock::new();
+ 
+ /// A lock for a few instructions; a proc that does not get it gives up the processor.
+@@ -122,8 +129,15 @@ pub fn current() -> &'static ThreadData {
+ 
+ unsafe fn new_thread_data() -> *mut ThreadData {
+     unsafe {
++        // malloc under ALL_LOCK: see EXITING (main goes on: the end kills it, or it ends)
++        ALL_LOCK.lock();
++        if EXITING.load(Relaxed) && libc::getpid() != MAIN_PID.load(Relaxed) {
++            ALL_LOCK.unlock();
++            libc::_exits(ptr::null());
++        }
+         let td = libc::mallocz(size_of::<ThreadData>() as libc::ulong, 1) as *mut ThreadData;
+         if td.is_null() {
++            ALL_LOCK.unlock();
+             rtabort!("plan9: out of memory for a thread");
+         }
+         ptr::write(
+@@ -137,7 +151,6 @@ unsafe fn new_thread_data() -> *mut ThreadData {
+                 keys: ptr::null_mut(),
+             },
+         );
+-        ALL_LOCK.lock();
+         (*td).all_next = ALL.load(Relaxed);
+         ALL.store(td, Relaxed);
+         ALL_LOCK.unlock();
+@@ -145,10 +158,19 @@ unsafe fn new_thread_data() -> *mut ThreadData {
+     }
+ }
+ 
+-/// Off the list of threads and freed: the calling thread is done with it.
+-unsafe fn free_thread_data(td: *mut ThreadData) {
++/// The calling proc ends: its data off the list of threads and freed, and its packet (a
++/// thread's, else null) handed to `join` or freed, all under `ALL_LOCK` (see EXITING): the
++/// program's end kills it while it is still on the list, or finds it gone, with only
++/// `_exits` left. When the program ends meanwhile, it ends without freeing.
++unsafe fn end_thread(td: *mut ThreadData, p: *mut Packet) -> ! {
+     unsafe {
++        // the slot is there (td is ours): slot() takes no lock
++        let s = slot();
+         ALL_LOCK.lock();
++        if EXITING.load(Relaxed) {
++            ALL_LOCK.unlock();
++            libc::_exits(ptr::null());
++        }
+         let mut l: *mut *mut ThreadData = ALL.as_ptr();
+         while !(*l).is_null() {
+             if *l == td {
+@@ -157,12 +179,19 @@ unsafe fn free_thread_data(td: *mut ThreadData) {
+             }
+             l = &raw mut (**l).all_next;
+         }
+-        ALL_LOCK.unlock();
+         if !(*td).keys.is_null() {
+             libc::free((*td).keys.cast());
+         }
+         libc::free(td.cast());
+-        *slot() = ptr::null_mut();
++        *s = ptr::null_mut();
++        if !p.is_null() {
++            match (*p).state.compare_exchange(RUNNING, EXITED, SeqCst, SeqCst) {
++                Ok(_) => futex_wake_all(&(*p).state),
++                Err(_) => free_packet(p),
++            }
++        }
++        ALL_LOCK.unlock();
++        libc::_exits(ptr::null());
+     }
+ }
+ 
+@@ -204,6 +233,7 @@ pub fn end_program(status: &crate::ffi::CStr) -> ! {
+     let me = unsafe { libc::getpid() };
+     let main = MAIN_PID.load(Relaxed);
+     ALL_LOCK.lock();
++    EXITING.store(true, Relaxed);
+     let mut td = ALL.load(Relaxed);
+     while !td.is_null() {
+         unsafe {
+@@ -619,8 +649,7 @@ unsafe extern "C" fn cproc_child(run: *const Run<*mut CProc>) -> ! {
+         let CProc { f, arg } = ptr::read(p);
+         libc::free(p.cast());
+         f(arg);
+-        free_thread_data(td);
+-        libc::_exits(ptr::null());
++        end_thread(td, ptr::null_mut())
+     }
+ }
+ 
+@@ -821,14 +850,7 @@ unsafe extern "C" fn __rust_plan9_threadstart(v: *mut c_void) -> ! {
+         let top = stack_top((*p).slot, (*p).stack, (*p).stack_size);
+         __rust_plan9_runon(top, run_packet, v);
+         // off the stack from malloc: it can go
+-        free_thread_data(td);
+-        match (*p).state.compare_exchange(RUNNING, EXITED, SeqCst, SeqCst) {
+-            Ok(_) => {
+-                futex_wake_all(&(*p).state);
+-            }
+-            Err(_) => free_packet(p),
+-        }
+-        libc::_exits(ptr::null());
++        end_thread(td, p)
+     }
+ }
+ 
+@@ -967,6 +989,7 @@ pub unsafe extern "C" fn __plan9_abort() -> ! {
+     let me = unsafe { libc::getpid() };
+     let main = MAIN_PID.load(Relaxed);
+     ALL_LOCK.lock();
++    EXITING.store(true, Relaxed);
+     let mut td = ALL.load(Relaxed);
+     while !td.is_null() {
+         unsafe {

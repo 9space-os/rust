@@ -728,3 +728,31 @@ copies only those.
 Checked before the commit: `crates-patch.sh init` and `diff` write all 55 patches byte for
 byte; cargo's workspace (build-cargo.sh) and tests/crates resolve offline to the same
 packages as before, only the `[[patch.unused]]` list of their lockfiles grows.
+
+## A program's end killed too few procs: malloc's lock held by a dead thread (2026-11-21)
+
+Found in the browser (browser/NOTES.md, 2026-11-21): servoshot hung after its exit, 2 in
+90 realweb runs; the procs left were finishing threads (`__rust_plan9_threadstart` ->
+`free_thread_data` -> `free`), all asleep in `plock` (malloc's pool lock), main gone.
+`end_program` kills the threads on `ALL` one by one (proc(3) ctl kill), under `ALL_LOCK`;
+one killed inside malloc dies with the lock held. Not on `ALL`, so not killed: a thread
+that had unlinked itself (`free_thread_data` unlinked, then freed its keys, its data, and
+in `__rust_plan9_threadstart` its packet), and a new one before `new_thread_data` linked
+it (after its `mallocz`). Such a proc then slept on the dead thread's lock for ever.
+
+The fix (patches/rust 0028): `EXITING`, set by `end_program` and `__plan9_abort` under
+`ALL_LOCK` before the kills. A proc takes malloc's lock at its start and end only under
+`ALL_LOCK` while it is on `ALL`: `new_thread_data` mallocs and links under it;
+`end_thread` (was `free_thread_data`; `__rust_plan9_threadstart` and `cproc_child`)
+unlinks, frees, hands its packet to `join` (or frees it), unlocks and `_exits`. A proc
+that finds `EXITING` ends at once, without malloc (main goes on: the end kills it, or it
+is the end). So the end kills it on the list, or finds it gone with only `_exits` left.
+No deadlock: nothing takes `ALL_LOCK` while it holds malloc's lock (`slot()` takes it
+only on its first use, before; `free_stack` is segdetach or free; `futex_wake_all` has
+the bucket locks; `end_program`'s `__ape_exit` runs before it locks).
+
+`tests/exitrace.rs` (tests/run.sh, 500 runs): 4 threads allocating, one starting short
+detached threads every 200 µs, main `process::exit` after 1-8 ms; FAIL when procs of it
+are left. Before (std of 2026-11-17): "exitrace FAIL 101 procs left"; after: ok, amd64
+twice, 386 once; tests/run.sh 14/14. arm64 not run (the std tests never ran there:
+dist/docs/open.md).

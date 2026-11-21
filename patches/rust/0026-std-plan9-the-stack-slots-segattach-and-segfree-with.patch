@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Stefan Hertenberger <erde74@gmail.com>
 Date: Sat, 14 Nov 2026 22:50:09 +0100
-Subject: [PATCH 26/27] std: plan9: the stack slots' segattach and segfree with
+Subject: [PATCH 26/28] std: plan9: the stack slots' segattach and segfree with
  a usize length
 
 The libc crate takes the length as a size_t now (nfront's libc.h:
