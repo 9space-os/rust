@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Stefan Hertenberger <erde74@gmail.com>
 Date: Thu, 29 Oct 2026 22:00:47 +0100
-Subject: [PATCH 4/8] plan9: the native libc's functions as libp9.a has them
+Subject: [PATCH] plan9: the native libc's functions as libp9.a has them
  (__p9_*), so that APE can be in the program beside it
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

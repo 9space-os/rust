@@ -1,8 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Stefan Hertenberger <erde74@gmail.com>
 Date: Sat, 21 Nov 2026 03:58:14 +0100
-Subject: [PATCH 28/28] std: plan9: the end of a program kills every proc that
- can hold malloc's lock: a proc's start and end under ALL_LOCK, EXITING
+Subject: [PATCH] std: plan9: the end of a program kills every proc that can
+ hold malloc's lock: a proc's start and end under ALL_LOCK, EXITING
 
 end_program kills the threads on ALL one by one; one killed inside
 malloc dies with its lock held. A proc off the list was not killed:

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Stefan Hertenberger <erde74@gmail.com>
 Date: Sat, 14 Nov 2026 22:50:08 +0100
-Subject: [PATCH 8/8] plan9: segattach and segfree take the length as a size_t
+Subject: [PATCH] plan9: segattach and segfree take the length as a size_t
 
 nfront's libc.h has them take a usize, 64 bits on amd64 and arm64 (a
 segment of 4 GB or more: an APU's video memory); a ulong was 32 bits.

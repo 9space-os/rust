@@ -1,9 +1,9 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Stefan Hertenberger <erde74@gmail.com>
 Date: Tue, 17 Nov 2026 08:31:23 +0100
-Subject: [PATCH 27/28] std: plan9: a thread's stack segment attached when the
- thread is made, detached with its stack (the kernel shares segments within a
- memory image)
+Subject: [PATCH] std: plan9: a thread's stack segment attached when the thread
+ is made, detached with its stack (the kernel shares segments within a memory
+ image)
 
 ---
  library/std/src/sys/pal/plan9/proc.rs | 64 +++++++++++++--------------

@@ -58,7 +58,8 @@ diff)
 		mkdir -p "$P/$name"
 		echo "$url ${old:-$t}" > "$P/$name/BASE"
 		mapfile -t ps < <(spec "$name" "$dir")
-		g "$repo" format-patch -q --no-signature --zero-commit --full-index "${rel[@]}" -o "$P/$name" "$t..plan9" -- "${ps[@]}"
+		# -N: subjects without "n/N", so that a new patch leaves the others as they are
+		g "$repo" format-patch -q -N --no-signature --zero-commit --full-index "${rel[@]}" -o "$P/$name" "$t..plan9" -- "${ps[@]}"
 		echo "$name: $(ls "$P/$name" | grep -c '\.patch$') patches on $t"
 	done ;;
 apply)
