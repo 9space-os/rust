@@ -1,0 +1,120 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stefan Hertenberger <erde74@gmail.com>
+Date: Sat, 21 Nov 2026 08:50:25 +0100
+Subject: [PATCH] std: plan9: eprintln!'s line in one write (write_fmt_lines
+ for StderrLock and Stderr)
+
+io::Write's own write_fmt writes each piece of a format by itself and
+stderr is unbuffered: on 9front the programs sharing a console (wsys,
+ui, the drivers) cut into each other's lines. sys/stdio/plan9.rs
+write_fmt_lines formats into a 2048-byte buffer and hands it on in
+one piece (longer output in order, in pieces from where it spilled).
+StderrLock::write_fmt (cfg plan9; eprintln! goes through the lock,
+whose default wrote piece by piece) uses it, borrowing the RefCell
+only for each write, and so does the sys Stderr (panic messages).
+
+tests/eprintline (toolchain/rust): 4 programs on one stderr pipe,
+2000 lines of 40 pieces each: before 7958 of 8000 cut, after none
+(amd64 twice, 386).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ library/std/src/io/stdio.rs        |  6 +++
+ library/std/src/sys/stdio/plan9.rs | 67 ++++++++++++++++++++++++++++++
+ 2 files changed, 73 insertions(+)
+
+diff --git a/library/std/src/io/stdio.rs b/library/std/src/io/stdio.rs
+index f72a55366bfdd8b08b7dddc599f7647158a70413..3a4956a8337ad0ead8f39995b9e1ea0446386472 100644
+--- a/library/std/src/io/stdio.rs
++++ b/library/std/src/io/stdio.rs
+@@ -1088,6 +1088,12 @@ impl Write for StderrLock<'_> {
+     fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
+         self.inner.borrow_mut().write_all(buf)
+     }
++    // plan9: a line of eprintln! in one write (sys/stdio/plan9.rs), the RefCell borrowed only
++    // for each write (a Display that prints to stderr itself still can)
++    #[cfg(target_os = "plan9")]
++    fn write_fmt(&mut self, args: fmt::Arguments<'_>) -> io::Result<()> {
++        crate::sys::stdio::write_fmt_lines(args, &mut |b| self.inner.borrow_mut().write_all(b))
++    }
+     fn write_all_vectored(&mut self, bufs: &mut [IoSlice<'_>]) -> io::Result<()> {
+         self.inner.borrow_mut().write_all_vectored(bufs)
+     }
+diff --git a/library/std/src/sys/stdio/plan9.rs b/library/std/src/sys/stdio/plan9.rs
+index 03b32613e33e21aa6536974eed246781169c6259..7545f31bd95f993706ed635354e6ac1af376af39 100644
+--- a/library/std/src/sys/stdio/plan9.rs
++++ b/library/std/src/sys/stdio/plan9.rs
+@@ -59,6 +59,73 @@ impl io::Write for Stderr {
+     fn flush(&mut self) -> io::Result<()> {
+         Ok(())
+     }
++
++    /// A panic's message in one write (panic_output): see [`write_fmt_lines`].
++    fn write_fmt(&mut self, fmt: crate::fmt::Arguments<'_>) -> io::Result<()> {
++        write_fmt_lines(fmt, &mut |b| io::Write::write_all(&mut Stderr, b))
++    }
++}
++
++/// The most that goes out of [`write_fmt_lines`] in one write.
++const LINE: usize = 2048;
++
++/// `fmt` formatted and given to `out` in one piece when it is at most [`LINE`] bytes: io::Write's
++/// own write_fmt writes each piece of a format by itself, and the programs that share a
++/// console (wsys, ui, the drivers) cut into each other's lines. Longer output goes out in the
++/// order it came, in pieces from there on. For stderr's lock (io/stdio.rs, `eprintln!`) and
++/// this Stderr (a panic's message); `out` is called only between pieces, never while one
++/// is formatted (a Display that prints to stderr itself still can).
++pub fn write_fmt_lines(
++    fmt: crate::fmt::Arguments<'_>,
++    out: &mut dyn FnMut(&[u8]) -> io::Result<()>,
++) -> io::Result<()> {
++    let mut w = LineBuf { buf: [0; LINE], len: 0, spilled: false, err: None, out };
++    let r = crate::fmt::write(&mut w, fmt);
++    if let Some(e) = w.err.take() {
++        return Err(e);
++    }
++    if r.is_err() {
++        return Err(io::const_error!(io::ErrorKind::Uncategorized, "formatter error"));
++    }
++    w.flush()
++}
++
++struct LineBuf<'a> {
++    buf: [u8; LINE],
++    len: usize,
++    /// the buffer went out once: the rest goes as it comes
++    spilled: bool,
++    err: Option<io::Error>,
++    out: &'a mut dyn FnMut(&[u8]) -> io::Result<()>,
++}
++
++impl LineBuf<'_> {
++    fn flush(&mut self) -> io::Result<()> {
++        if self.len == 0 {
++            return Ok(());
++        }
++        let n = self.len;
++        self.len = 0;
++        (self.out)(&self.buf[..n])
++    }
++}
++
++impl crate::fmt::Write for LineBuf<'_> {
++    fn write_str(&mut self, s: &str) -> crate::fmt::Result {
++        let b = s.as_bytes();
++        let r = if !self.spilled && self.len + b.len() <= LINE {
++            self.buf[self.len..self.len + b.len()].copy_from_slice(b);
++            self.len += b.len();
++            Ok(())
++        } else {
++            self.spilled = true;
++            self.flush().and_then(|()| (self.out)(b))
++        };
++        r.map_err(|e| {
++            self.err = Some(e);
++            crate::fmt::Error
++        })
++    }
+ }
+ 
+ pub const STDIN_BUF_SIZE: usize = crate::sys::io::DEFAULT_BUF_SIZE;

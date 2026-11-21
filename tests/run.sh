@@ -30,7 +30,7 @@ O=$TOP/tests/out/$objtype
 mkdir -p "$O" "$TOP/logs"
 cd "$TOP/tests"
 $R --edition 2024 --target $T -O -C panic=abort nostd.rs -o "$O/nostd"
-for t in std1 std2 unwind overflow lock nb exitrace; do
+for t in std1 std2 unwind overflow lock nb exitrace eprintline; do
 	$R --edition 2024 --target $T -O -g $t.rs -o "$O/$t"
 done
 # C and C++ against APE in Rust programs, compiled as any APE program
@@ -68,8 +68,10 @@ cmds=(
 	# the end of a program while its threads allocate and finish: no proc of it stays
 	# (a finishing thread asleep on malloc's lock, held by one end_program killed)
 	"for(i in \`{seq 500}) /tests/exitrace; sleep 2; n=\`{ps | grep -c ' exitrace\$'}; if(~ \$n 0) echo exitrace ok; if not echo exitrace FAIL \$n procs left; slay exitrace | rc"
+	# eprintln! lines of 4 programs on one stderr pipe stay whole (one write a line)
+	"/tests/eprintline"
 )
-"$TOP/tests/guest.sh" -f "$O/nostd" "$O/std1" "$O/std2" "$O/unwind" "$O/overflow" "$O/cmain" "$O/cxxmain" "$O/cexit" "$O/lock" "$O/nb" "$O/exitrace" -- "${cmds[@]}" > "$TOP/logs/$LOG" 2>&1
-tests="nostd std1 std2 unwind overflow cmain cxxmain lock lock-any nb cexit-exit cexit-abort cexit-procs exitrace"
+"$TOP/tests/guest.sh" -f "$O/nostd" "$O/std1" "$O/std2" "$O/unwind" "$O/overflow" "$O/cmain" "$O/cxxmain" "$O/cexit" "$O/lock" "$O/nb" "$O/exitrace" "$O/eprintline" -- "${cmds[@]}" > "$TOP/logs/$LOG" 2>&1
+tests="nostd std1 std2 unwind overflow cmain cxxmain lock lock-any nb cexit-exit cexit-abort cexit-procs exitrace eprintline"
 grep -E "^(${tests// /|})(: FAIL| (ok|FAIL))" "$TOP/logs/$LOG" || { tail -20 "$TOP/logs/$LOG"; exit 1; }
 [ "$(grep -cE "^(${tests// /|}) ok" "$TOP/logs/$LOG")" = "$(echo $tests | wc -w)" ]

@@ -756,3 +756,24 @@ detached threads every 200 µs, main `process::exit` after 1-8 ms; FAIL when pro
 are left. Before (std of 2026-11-17): "exitrace FAIL 101 procs left"; after: ok, amd64
 twice, 386 once; tests/run.sh 14/14. arm64 not run (the std tests never ran there:
 dist/docs/open.md).
+
+## eprintln!'s line in one write (2026-11-21)
+
+std's Stderr is unbuffered on every target, and io::Write's own write_fmt writes each
+piece of a format by itself (unix too); Stdout is a LineWriter. On 9front the programs
+that share a console (wsys, ui, the drivers) cut into each other's lines (once a grep of
+tests/gpu). Now, plan9 only: `sys/stdio/plan9.rs` `write_fmt_lines` formats into a
+2048-byte buffer on the stack and hands it to its writer in one piece; longer output goes
+in order, in pieces from where it spilled. Used by `StderrLock::write_fmt` (io/stdio.rs,
+`#[cfg(target_os = "plan9")]`: eprintln! goes through the lock, whose default write_fmt
+wrote piece by piece; the RefCell is borrowed only for each write, so a Display that
+prints to stderr itself still can) and by the sys Stderr's write_fmt (a panic's message,
+panic_output). The first attempt overrode only the sys Stderr: eprintln! never reached it
+(the lock's default write_fmt), tests/eprintline still failed alike.
+The 2 KB on the stack: a panic within 2 KB of a stack's end faults one frame earlier;
+the gap below a thread's stack holds (DEFAULT_MIN_STACK_SIZE 2 MiB).
+
+`tests/eprintline.rs` (tests/run.sh): 4 copies of itself on one stderr pipe, each 2000
+lines of 40 pieces; every line read back must be one child's, whole. Before: "eprintline
+FAIL 7958 cut lines, 42 of 8000 whole"; after: ok, amd64 twice, 386; 15/15. On the Linux
+host (pieces too) it fails alike (7972 cut).
