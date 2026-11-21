@@ -72,5 +72,14 @@ SMP= UFS_EXTRA=$T/extra QEMU_EXTRA="-smp $smp ${disk[*]} $QEMU_EXTRA" setsid tim
 	bash scripts/guest/boot-cli.sh "$@" > "$T/log" 2>&1 &
 guest=$!
 trap 'kill -TERM -- -$guest 2>/dev/null; exit 1' TERM INT
-wait $guest || true
+st=0
+wait $guest || st=$?
+# timeout's 124: boot-cli.sh was killed before it wrote its log; the console up to then
+# is in CLI_DIR's console.log (boot-cli.sh writes it as it comes). Say so and pass the
+# status on: a guest that hung looked like an empty run that passed
+if [ $st = 124 ]; then
+	echo "guest.sh: timed out after ${GUEST_TIMEOUT:-600} s (GUEST_TIMEOUT); the console up to then:"
+	tr -d '\r' < "$CLI_DIR/console.log" | sed -n '/^init: starting/,$p'
+	exit 124
+fi
 tr -d '\r' < "$T/log" | sed -n '/^init: starting/,$p'
