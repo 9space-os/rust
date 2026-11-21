@@ -27,6 +27,23 @@ diff -ruN a/Cargo.toml b/Cargo.toml
  vulkan-portability = ["wgpu-core-deps-apple/vulkan-portability"]
  webgl = [
      "wgpu-core-deps-wasm/webgl",
+diff -ruN a/src/command/draw.rs b/src/command/draw.rs
+--- a/src/command/draw.rs
++++ b/src/command/draw.rs
+@@ -158,11 +158,5 @@
+     }
+ }
+ 
+-#[derive(Clone, Copy, Debug, Default)]
+-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+-pub struct Rect<T> {
+-    pub x: T,
+-    pub y: T,
+-    pub w: T,
+-    pub h: T,
+-}
++// 9front: gfx-rs/wgpu PR #10152 (commit f061efb29a8b), backported: in wgpu-types now
++pub use wgt::Rect;
 diff -ruN a/src/command/mod.rs b/src/command/mod.rs
 --- a/src/command/mod.rs
 +++ b/src/command/mod.rs
@@ -164,7 +181,24 @@ diff -ruN a/src/device/queue.rs b/src/device/queue.rs
 diff -ruN a/src/present.rs b/src/present.rs
 --- a/src/present.rs
 +++ b/src/present.rs
-@@ -285,7 +285,13 @@
+@@ -275,6 +275,16 @@
+     }
+ 
+     pub fn present(&self) -> Result<Status, SurfaceError> {
++        self.present_with_damage(&[])
++    }
++
++    /// 9front: gfx-rs/wgpu PR #10152 (commit f061efb29a8b), backported: the
++    /// regions that changed since the last present, a hint for the backends
++    /// with incremental presentation; empty: all of it.
++    pub fn present_with_damage(
++        &self,
++        damage_rects: &[wgt::Rect<u32>],
++    ) -> Result<Status, SurfaceError> {
+         profiling::scope!("Surface::present");
+ 
+         let mut presentation = self.presentation.lock();
+@@ -285,7 +295,13 @@
  
          let device = &present.device;
  
@@ -179,7 +213,35 @@ diff -ruN a/src/present.rs b/src/present.rs
          let queue = device.get_queue().unwrap();
  
          let texture = present
-@@ -335,7 +341,10 @@
+@@ -293,6 +309,18 @@
+             .take()
+             .ok_or(SurfaceError::AlreadyAcquired)?;
+ 
++        // hal requires damage rects to be non-empty and within the surface.
++        let surface_rect = wgt::Rect {
++            x: 0,
++            y: 0,
++            w: present.config.width,
++            h: present.config.height,
++        };
++        let damage_rects = damage_rects
++            .iter()
++            .filter_map(|rect| rect.intersect(&surface_rect))
++            .collect::<Vec<_>>();
++
+         let mut exclusive_snatch_guard = device.snatchable_lock.write();
+         let inner = texture.inner.snatch(&mut exclusive_snatch_guard);
+         drop(exclusive_snatch_guard);
+@@ -303,7 +331,7 @@
+                 let raw_surface = self.raw(device.backend()).unwrap();
+                 let raw_queue = queue.raw();
+                 let _fence_lock = device.fence.write();
+-                unsafe { raw_queue.present(raw_surface, raw) }
++                unsafe { raw_queue.present(raw_surface, raw, &damage_rects) }
+             }
+             _ => unreachable!(),
+         };
+@@ -335,7 +363,10 @@
  
          let device = &present.device;
  
@@ -191,6 +253,31 @@ diff -ruN a/src/present.rs b/src/present.rs
  
          let texture = present
              .acquired_texture
+@@ -395,6 +426,15 @@
+     }
+ 
+     pub fn surface_present(&self, surface_id: id::SurfaceId) -> Result<Status, SurfaceError> {
++        self.surface_present_with_damage(surface_id, &[])
++    }
++
++    /// 9front: gfx-rs/wgpu PR #10152, backported (Surface::present_with_damage)
++    pub fn surface_present_with_damage(
++        &self,
++        surface_id: id::SurfaceId,
++        damage_rects: &[wgt::Rect<u32>],
++    ) -> Result<Status, SurfaceError> {
+         let surface = self.surfaces.get(surface_id);
+ 
+         #[cfg(feature = "trace")]
+@@ -404,7 +444,7 @@
+             }
+         }
+ 
+-        surface.present()
++        surface.present_with_damage(damage_rects)
+     }
+ 
+     pub fn surface_texture_discard(&self, surface_id: id::SurfaceId) -> Result<(), SurfaceError> {
 diff -ruN a/src/resource.rs b/src/resource.rs
 --- a/src/resource.rs
 +++ b/src/resource.rs

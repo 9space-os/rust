@@ -21,6 +21,308 @@ diff -ruN a/Cargo.toml b/Cargo.toml
  [target.'cfg(not(target_arch = "wasm32"))'.dependencies.gpu-allocator]
  version = "0.28"
  features = ["hashbrown"]
+diff -ruN a/src/dx12/mod.rs b/src/dx12/mod.rs
+--- a/src/dx12/mod.rs
++++ b/src/dx12/mod.rs
+@@ -1572,6 +1572,7 @@
+         &self,
+         surface: &Surface,
+         _texture: Texture,
++        _damage_rects: &[wgt::Rect<u32>],
+     ) -> Result<(), crate::SurfaceError> {
+         let mut swapchain = surface.swap_chain.write();
+         let sc = swapchain.as_mut().unwrap();
+diff -ruN a/src/dynamic/queue.rs b/src/dynamic/queue.rs
+--- a/src/dynamic/queue.rs
++++ b/src/dynamic/queue.rs
+@@ -18,6 +18,7 @@
+         &self,
+         surface: &dyn DynSurface,
+         texture: Box<dyn DynSurfaceTexture>,
++        damage_rects: &[wgt::Rect<u32>],
+     ) -> Result<(), SurfaceError>;
+     unsafe fn get_timestamp_period(&self) -> f32;
+ }
+@@ -45,9 +46,10 @@
+         &self,
+         surface: &dyn DynSurface,
+         texture: Box<dyn DynSurfaceTexture>,
++        damage_rects: &[wgt::Rect<u32>],
+     ) -> Result<(), SurfaceError> {
+         let surface = surface.expect_downcast_ref();
+-        unsafe { Q::present(self, surface, texture.unbox()) }
++        unsafe { Q::present(self, surface, texture.unbox(), damage_rects) }
+     }
+ 
+     unsafe fn get_timestamp_period(&self) -> f32 {
+diff -ruN a/src/gles/egl.rs b/src/gles/egl.rs
+--- a/src/gles/egl.rs
++++ b/src/gles/egl.rs
+@@ -77,6 +77,15 @@
+     attrib_list: *const khronos_egl::Attrib,
+ ) -> ffi::c_int;
+ 
++// 9front: gfx-rs/wgpu PR #10152 (commit f061efb29a8b), backported: present's damage
++// through EGL_{KHR,EXT}_swap_buffers_with_damage
++type EglSwapBuffersWithDamageFun = unsafe extern "system" fn(
++    display: *const ffi::c_void,
++    surface: *const ffi::c_void,
++    rects: *const ffi::c_int,
++    n_rects: ffi::c_int,
++) -> ffi::c_uint;
++
+ unsafe extern "system" fn egl_debug_proc(
+     error: khronos_egl::Enum,
+     command_raw: *const ffi::c_char,
+@@ -471,6 +480,7 @@
+     force_gles_minor_version: wgt::Gles3MinorVersion,
+     /// Method by which the framebuffer should support srgb
+     srgb_kind: SrgbFrameBufferKind,
++    swap_buffers_with_damage: Option<EglSwapBuffersWithDamageFun>,
+ }
+ 
+ // Different calls to `eglGetPlatformDisplay` may return the same `Display`, making it a global
+@@ -552,6 +562,23 @@
+             SrgbFrameBufferKind::None
+         };
+ 
++        let swap_buffers_with_damage =
++            if display_extensions.contains("EGL_KHR_swap_buffers_with_damage") {
++                egl.get_proc_address("eglSwapBuffersWithDamageKHR")
++            } else if display_extensions.contains("EGL_EXT_swap_buffers_with_damage") {
++                egl.get_proc_address("eglSwapBuffersWithDamageEXT")
++            } else {
++                None
++            }
++            .map(|address| unsafe {
++                core::mem::transmute::<extern "system" fn(), EglSwapBuffersWithDamageFun>(address)
++            });
++        if swap_buffers_with_damage.is_some() {
++            log::debug!("\tEGL surface: +swap_buffers_with_damage");
++        } else {
++            log::debug!("\tEGL surface: -swap_buffers_with_damage");
++        }
++
+         if log::max_level() >= log::LevelFilter::Trace {
+             log::trace!("Configurations:");
+             let config_count = egl
+@@ -771,6 +798,7 @@
+             wl_display: None,
+             srgb_kind,
+             force_gles_minor_version,
++            swap_buffers_with_damage,
+         })
+     }
+ }
+@@ -1128,6 +1156,7 @@
+             raw_window_handle: window_handle,
+             swapchain: RwLock::new(None),
+             srgb_kind: inner.srgb_kind,
++            swap_buffers_with_damage: inner.swap_buffers_with_damage,
+         })
+     }
+ 
+@@ -1247,6 +1276,7 @@
+     raw_window_handle: raw_window_handle::RawWindowHandle,
+     swapchain: RwLock<Option<Swapchain>>,
+     srgb_kind: SrgbFrameBufferKind,
++    swap_buffers_with_damage: Option<EglSwapBuffersWithDamageFun>,
+ }
+ 
+ unsafe impl Send for Surface {}
+@@ -1257,6 +1287,7 @@
+         &self,
+         _suf_texture: super::Texture,
+         context: &AdapterContext,
++        damage_rects: &[wgt::Rect<u32>],
+     ) -> Result<(), crate::SurfaceError> {
+         let gl = unsafe { context.get_without_egl_lock() };
+         let swapchain = self.swapchain.read();
+@@ -1313,14 +1344,44 @@
+ 
+         unsafe { gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None) };
+ 
+-        self.egl
+-            .instance
+-            .swap_buffers(self.egl.display, sc.surface)
+-            .map_err(|e| {
+-                log::error!("swap_buffers failed: {e}");
+-                crate::SurfaceError::Lost
+-                // TODO: should we unset the current context here?
+-            })?;
++        match self.swap_buffers_with_damage {
++            Some(swap_with_damage) if !damage_rects.is_empty() => {
++                // EGL uses a bottom-left origin.
++                let rects = damage_rects
++                    .iter()
++                    .flat_map(|rect| {
++                        [
++                            rect.x as ffi::c_int,
++                            (sc.extent.height - rect.y - rect.h) as ffi::c_int,
++                            rect.w as ffi::c_int,
++                            rect.h as ffi::c_int,
++                        ]
++                    })
++                    .collect::<Vec<ffi::c_int>>();
++                let ok = unsafe {
++                    swap_with_damage(
++                        self.egl.display.as_ptr(),
++                        sc.surface.as_ptr(),
++                        rects.as_ptr(),
++                        damage_rects.len() as ffi::c_int,
++                    )
++                };
++                if ok == khronos_egl::FALSE {
++                    log::error!("swap_buffers_with_damage failed");
++                    return Err(crate::SurfaceError::Lost);
++                }
++            }
++            _ => {
++                self.egl
++                    .instance
++                    .swap_buffers(self.egl.display, sc.surface)
++                    .map_err(|e| {
++                        log::error!("swap_buffers failed: {e}");
++                        crate::SurfaceError::Lost
++                        // TODO: should we unset the current context here?
++                    })?;
++            }
++        }
+         self.egl
+             .instance
+             .make_current(self.egl.display, None, None, None)
+diff -ruN a/src/gles/queue.rs b/src/gles/queue.rs
+--- a/src/gles/queue.rs
++++ b/src/gles/queue.rs
+@@ -1927,8 +1927,9 @@
+         &self,
+         surface: &super::Surface,
+         texture: super::Texture,
++        damage_rects: &[wgt::Rect<u32>],
+     ) -> Result<(), crate::SurfaceError> {
+-        unsafe { surface.present(texture, &self.shared.context) }
++        unsafe { surface.present(texture, &self.shared.context, damage_rects) }
+     }
+ 
+     unsafe fn get_timestamp_period(&self) -> f32 {
+diff -ruN a/src/gles/web.rs b/src/gles/web.rs
+--- a/src/gles/web.rs
++++ b/src/gles/web.rs
+@@ -227,6 +227,7 @@
+         &self,
+         _suf_texture: super::Texture,
+         context: &AdapterContext,
++        _damage_rects: &[wgt::Rect<u32>],
+     ) -> Result<(), crate::SurfaceError> {
+         let gl = &context.glow_context;
+         let swapchain = self.swapchain.read();
+diff -ruN a/src/gles/wgl.rs b/src/gles/wgl.rs
+--- a/src/gles/wgl.rs
++++ b/src/gles/wgl.rs
+@@ -684,6 +684,7 @@
+         &self,
+         _suf_texture: super::Texture,
+         context: &AdapterContext,
++        _damage_rects: &[wgt::Rect<u32>],
+     ) -> Result<(), crate::SurfaceError> {
+         let swapchain = self.swapchain.read();
+         let sc = swapchain.as_ref().unwrap();
+diff -ruN a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1226,10 +1226,17 @@
+         surface_textures: &[&<Self::A as Api>::SurfaceTexture],
+         signal_fence: (&mut <Self::A as Api>::Fence, FenceValue),
+     ) -> Result<(), DeviceError>;
++    /// `damage_rects` are the regions that changed since the last present, as a
++    /// hint for backends that support incremental presentation. An empty slice
++    /// means the whole surface changed. Every rect in `damage_rects` must be
++    /// non-empty and lie within the surface's configured extent.
++    ///
++    /// 9front: gfx-rs/wgpu PR #10152 (commit f061efb29a8b), backported.
+     unsafe fn present(
+         &self,
+         surface: &<Self::A as Api>::Surface,
+         texture: <Self::A as Api>::SurfaceTexture,
++        damage_rects: &[wgt::Rect<u32>],
+     ) -> Result<(), SurfaceError>;
+     unsafe fn get_timestamp_period(&self) -> f32;
+ }
+diff -ruN a/src/metal/mod.rs b/src/metal/mod.rs
+--- a/src/metal/mod.rs
++++ b/src/metal/mod.rs
+@@ -495,6 +495,7 @@
+         &self,
+         _surface: &Surface,
+         texture: SurfaceTexture,
++        _damage_rects: &[wgt::Rect<u32>],
+     ) -> Result<(), crate::SurfaceError> {
+         let queue = &self.raw.lock();
+         objc::rc::autoreleasepool(|| {
+diff -ruN a/src/noop/mod.rs b/src/noop/mod.rs
+--- a/src/noop/mod.rs
++++ b/src/noop/mod.rs
+@@ -307,6 +307,7 @@
+         &self,
+         surface: &Context,
+         texture: Resource,
++        _damage_rects: &[wgt::Rect<u32>],
+     ) -> Result<(), crate::SurfaceError> {
+         Ok(())
+     }
+diff -ruN a/src/vulkan/adapter.rs b/src/vulkan/adapter.rs
+--- a/src/vulkan/adapter.rs
++++ b/src/vulkan/adapter.rs
+@@ -1162,6 +1162,12 @@
+             extensions.push(khr::swapchain_mutable_format::NAME);
+         }
+ 
++        // Optional `VK_KHR_incremental_present` (9front: gfx-rs/wgpu PR #10152,
++        // commit f061efb29a8b, backported: present's damage)
++        if self.supports_extension(khr::incremental_present::NAME) {
++            extensions.push(khr::incremental_present::NAME);
++        }
++
+         // Optional `VK_EXT_robustness2`
+         if self.supports_extension(ext::robustness2::NAME) {
+             extensions.push(ext::robustness2::NAME);
+@@ -1998,6 +2004,8 @@
+                 .map(|a| a.max_multiview_instance_index)
+                 .unwrap_or(0),
+             scratch_buffer_alignment: alignments.ray_tracing_scratch_buffer_alignment,
++            incremental_present: phd_capabilities
++                .supports_extension(khr::incremental_present::NAME),
+         };
+         let capabilities = crate::Capabilities {
+             limits: phd_capabilities.to_wgpu_limits(),
+diff -ruN a/src/vulkan/conv.rs b/src/vulkan/conv.rs
+--- a/src/vulkan/conv.rs
++++ b/src/vulkan/conv.rs
+@@ -1035,3 +1035,24 @@
+ 
+     (stages, access)
+ }
++
++/// 9front: gfx-rs/wgpu PR #10152 (commit f061efb29a8b), backported: the damage
++/// rects (top-left origin, clipped to the surface by wgpu-core) as
++/// `VkPresentRegionKHR`'s rectangles, all in layer 0.
++pub fn map_damage_rects(damage_rects: &[wgt::Rect<u32>]) -> Vec<vk::RectLayerKHR> {
++    damage_rects
++        .iter()
++        .map(|rect| {
++            vk::RectLayerKHR::default()
++                .offset(vk::Offset2D {
++                    x: rect.x as i32,
++                    y: rect.y as i32,
++                })
++                .extent(vk::Extent2D {
++                    width: rect.w,
++                    height: rect.h,
++                })
++                .layer(0)
++        })
++        .collect()
++}
 diff -ruN a/src/vulkan/instance.rs b/src/vulkan/instance.rs
 --- a/src/vulkan/instance.rs
 +++ b/src/vulkan/instance.rs
@@ -149,3 +451,86 @@ diff -ruN a/src/vulkan/instance.rs b/src/vulkan/instance.rs
              (Rwh::AndroidNdk(handle), _) => {
                  self.create_surface_android(handle.a_native_window.as_ptr())
              }
+diff -ruN a/src/vulkan/mod.rs b/src/vulkan/mod.rs
+--- a/src/vulkan/mod.rs
++++ b/src/vulkan/mod.rs
+@@ -394,6 +394,10 @@
+     /// these usages do not have as high of an alignment requirement using the buffer as
+     ///  a scratch buffer when building acceleration structures.
+     scratch_buffer_alignment: u32,
++
++    /// True if `VK_KHR_incremental_present` is enabled on the device.
++    /// (9front: gfx-rs/wgpu PR #10152, backported)
++    incremental_present: bool,
+ }
+ 
+ bitflags::bitflags!(
+@@ -1349,10 +1353,16 @@
+         &self,
+         surface: &Surface,
+         texture: SurfaceTexture,
++        damage_rects: &[wgt::Rect<u32>],
+     ) -> Result<(), crate::SurfaceError> {
+         let mut swapchain = surface.swapchain.write();
+ 
+-        unsafe { swapchain.as_mut().unwrap().present(self, texture) }
++        unsafe {
++            swapchain
++                .as_mut()
++                .unwrap()
++                .present(self, texture, damage_rects)
++        }
+     }
+ 
+     unsafe fn get_timestamp_period(&self) -> f32 {
+diff -ruN a/src/vulkan/swapchain/mod.rs b/src/vulkan/swapchain/mod.rs
+--- a/src/vulkan/swapchain/mod.rs
++++ b/src/vulkan/swapchain/mod.rs
+@@ -69,10 +69,13 @@
+     ) -> Result<(), crate::SurfaceError>;
+ 
+     /// Presents the given surface texture using the queue.
++    ///
++    /// See [`crate::Queue::present`] for the meaning of `damage_rects`.
+     unsafe fn present(
+         &mut self,
+         queue: &super::Queue,
+         texture: crate::vulkan::SurfaceTexture,
++        damage_rects: &[wgt::Rect<u32>],
+     ) -> Result<(), crate::SurfaceError>;
+ 
+     /// Allows downcasting to the concrete type.
+diff -ruN a/src/vulkan/swapchain/native.rs b/src/vulkan/swapchain/native.rs
+--- a/src/vulkan/swapchain/native.rs
++++ b/src/vulkan/swapchain/native.rs
+@@ -531,6 +531,7 @@
+         &mut self,
+         queue: &crate::vulkan::Queue,
+         texture: crate::vulkan::SurfaceTexture,
++        damage_rects: &[wgt::Rect<u32>],
+     ) -> Result<(), crate::SurfaceError> {
+         let metadata = texture
+             .metadata
+@@ -577,6 +578,22 @@
+             vk_info
+         };
+ 
++        // 9front: gfx-rs/wgpu PR #10152 (commit f061efb29a8b), backported: the
++        // damage as VK_KHR_incremental_present's regions, when it is enabled
++        let rects: Vec<vk::RectLayerKHR>;
++        let present_region;
++        let mut present_regions;
++        let vk_info =
++            if self.device.private_caps.incremental_present && !damage_rects.is_empty() {
++                rects = conv::map_damage_rects(damage_rects);
++                present_region = vk::PresentRegionKHR::default().rectangles(&rects);
++                present_regions = vk::PresentRegionsKHR::default()
++                    .regions(core::slice::from_ref(&present_region));
++                vk_info.push_next(&mut present_regions)
++            } else {
++                vk_info
++            };
++
+         let suboptimal = {
+             profiling::scope!("vkQueuePresentKHR");
+             unsafe { self.functor.queue_present(queue.raw, &vk_info) }.map_err(|error| {

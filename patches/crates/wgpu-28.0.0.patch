@@ -12,3 +12,77 @@ diff -ruN a/build.rs b/build.rs
          ) },
          gles: { any(
              // The `gles` feature enables the OpenGL/GLES backend only on "native OpenGL" platforms, i.e. Windows, Linux, Android, and Emscripten.
+diff -ruN a/src/api/queue.rs b/src/api/queue.rs
+--- a/src/api/queue.rs
++++ b/src/api/queue.rs
+@@ -345,3 +345,23 @@
+         }
+     }
+ }
++
++/// 9front: gfx-rs/wgpu PR #10152 (commit f061efb29a8b), backported: upstream's
++/// `Queue::present_with_damage`, so that a wgpu with it replaces this 1:1
++/// (`SurfaceTexture::present` stays as 28's).
++impl Queue {
++    /// Like [`SurfaceTexture::present`], but with a hint of which regions changed since the last
++    /// present, in pixels. Rects are clipped to the surface, and backends without incremental
++    /// presentation ignore them.
++    ///
++    /// The texture must still contain the whole frame, since the compositor may use any part
++    /// of it.
++    pub fn present_with_damage(
++        &self,
++        mut surface_texture: SurfaceTexture,
++        damage_rects: &[wgt::Rect<u32>],
++    ) {
++        surface_texture.presented = true;
++        surface_texture.detail.present_with_damage(damage_rects);
++    }
++}
+diff -ruN a/src/backend/wgpu_core.rs b/src/backend/wgpu_core.rs
+--- a/src/backend/wgpu_core.rs
++++ b/src/backend/wgpu_core.rs
+@@ -3932,7 +3932,15 @@
+ 
+ impl dispatch::SurfaceOutputDetailInterface for CoreSurfaceOutputDetail {
+     fn present(&self) {
+-        match self.context.0.surface_present(self.surface_id) {
++        self.present_with_damage(&[]);
++    }
++
++    fn present_with_damage(&self, damage_rects: &[wgt::Rect<u32>]) {
++        match self
++            .context
++            .0
++            .surface_present_with_damage(self.surface_id, damage_rects)
++        {
+             Ok(_status) => (),
+             Err(err) => {
+                 self.context
+diff -ruN a/src/dispatch.rs b/src/dispatch.rs
+--- a/src/dispatch.rs
++++ b/src/dispatch.rs
+@@ -568,6 +568,11 @@
+ 
+ pub trait SurfaceOutputDetailInterface: CommonTraits {
+     fn present(&self);
++    /// 9front: gfx-rs/wgpu PR #10152 (commit f061efb29a8b), backported: the
++    /// damage is a hint; backends without incremental presentation present all.
++    fn present_with_damage(&self, _damage_rects: &[wgt::Rect<u32>]) {
++        self.present();
++    }
+     fn texture_discard(&self);
+ }
+ 
+diff -ruN a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -143,7 +143,7 @@
+     MemoryBudgetThresholds, MemoryHints, MipmapFilterMode, MultisampleState, NoopBackendOptions,
+     Origin2d, Origin3d, PipelineStatisticsTypes, PollError, PollStatus, PolygonMode,
+     PowerPreference, PredefinedColorSpace, PresentMode, PresentationTimestamp, PrimitiveState,
+-    PrimitiveTopology, QueryType, RenderBundleDepthStencil, RequestAdapterError,
++    PrimitiveTopology, QueryType, Rect, RenderBundleDepthStencil, RequestAdapterError,
+     SamplerBindingType, SamplerBorderColor, ShaderLocation, ShaderModel, ShaderRuntimeChecks,
+     ShaderStages, StencilFaceState, StencilOperation, StencilState, StorageTextureAccess,
+     SurfaceCapabilities, SurfaceStatus, TexelCopyBufferLayout, TextureAspect, TextureDimension,
