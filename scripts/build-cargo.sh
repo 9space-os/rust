@@ -23,6 +23,16 @@ TV=$(echo $T | tr a-z- A-Z_)
 export PATH=$GCC9BUILD/$objtype/cross/bin:$PATH
 export RUSTC=$TOP/rust/build/host/stage1/bin/rustc
 export CARGO_TARGET_DIR=$TOP/tests/out/cargo-port
+# cargo keeps crates built against an older stage-1 std (rustc's version string does
+# not change with it: "found possibly newer version of crate core"): the output starts
+# anew when the stds it was built with (the targets', and the host's for build scripts
+# and proc macros) are not the ones there now
+core=$(ls -l --time-style=+%s "$TOP"/rust/build/host/stage1/lib/rustlib/*/lib/libcore-*.rlib 2>/dev/null | awk '{print $6, $7}')
+stamp=$CARGO_TARGET_DIR.std
+if [ -n "$core" ] && [ "$(cat "$stamp" 2>/dev/null)" != "$core" ]; then
+	rm -rf "$CARGO_TARGET_DIR"
+	echo "$core" > "$stamp"
+fi
 export CC_${T//-/_}=$X-gcc CXX_${T//-/_}=$X-g++
 # the C of crates: APE programs as any (the target links APE beside libc's libp9.a)
 export AR_${T//-/_}=$X-ar
