@@ -821,3 +821,16 @@ That needed masonry_core too (the tree's xilem/): its layout pass repainted ever
 widget laid out again (upstream's TODO), the root included, so the damage was the
 window; now only what asked for layout or changed size (sys/src/rust/README.md).
 tests/gpu 203/203, tests/uiserver all passed, tests/ui 233/233.
+
+## clang's patches in the llvm-project series (2026-11-26)
+
+toolchain/clang (9space's `CLANG_DIR`) builds clang, lld and LLVM's runtimes
+for 9front from this llvm-project: patches 0002-0004 (`Triple::Plan9`, clang's
+target and driver with `-fplan9-extensions`, compiler-rt and libc++ on APE);
+its NOTES.md is the log. For rustc: `x86_64-unknown-plan9` & co. now parse as
+OS `plan9`, not unknown. Expected without effect: rustc sets emulated TLS
+itself (`Options.EmulatedTLS`), the X86 and AArch64 backends key nothing on
+an unknown OS, 386's stack alignment stays 4 (16 only for Linux, Darwin,
+kFreeBSD, 64 bit), and the cross rustc on Linux uses Rust's CI LLVM. Open:
+rebuild Rust's LLVM (`scripts/build-llvm.sh`) and the native rustc from the
+series and run tests/run.sh, rustc.sh to confirm.

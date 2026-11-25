@@ -1,0 +1,911 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stefan Hertenberger <erde74@gmail.com>
+Date: Thu, 26 Nov 2026 00:27:16 +0100
+Subject: [PATCH] clang: 9front (Plan 9): Plan9TargetInfo (__plan9__, unix; 386
+ size_t/ptrdiff_t long, as 9space's gcc; char signed; 386 CPU pentium), the
+ driver ToolChains/Plan9.cpp (APE's headers, -D_POSIX_SOURCE, static, ld.lld
+ with /$objtype/plan9.ld, --wrap=main, --eh-frame-hdr, compiler-rt, libunwind,
+ libc++ from /$objtype/clang; no __cxa_atexit), -fplan9-extensions (unnamed
+ members by tag or typedef, named by their type, a pointer converted to a
+ pointer to one; omitted parameter names)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../clang/Basic/DiagnosticSemaKinds.td        |   2 +
+ clang/include/clang/Basic/LangOptions.def     |   1 +
+ clang/include/clang/Options/Options.td        |  11 +-
+ clang/include/clang/Sema/Sema.h               |  18 ++
+ clang/lib/Basic/Targets.cpp                   |   7 +
+ clang/lib/Basic/Targets/OSTargets.h           |  20 ++
+ clang/lib/Basic/Targets/X86.h                 |  12 +
+ clang/lib/Driver/CMakeLists.txt               |   1 +
+ clang/lib/Driver/Driver.cpp                   |   4 +
+ clang/lib/Driver/ToolChains/Arch/X86.cpp      |   3 +
+ clang/lib/Driver/ToolChains/Clang.cpp         |  10 +-
+ clang/lib/Driver/ToolChains/Plan9.cpp         | 205 ++++++++++++++++++
+ clang/lib/Driver/ToolChains/Plan9.h           | 107 +++++++++
+ clang/lib/Sema/SemaChecking.cpp               |   5 +-
+ clang/lib/Sema/SemaDecl.cpp                   |   6 +-
+ clang/lib/Sema/SemaExpr.cpp                   |  15 +-
+ clang/lib/Sema/SemaExprMember.cpp             | 138 ++++++++++++
+ clang/test/Sema/plan9-extensions.c            |  57 +++++
+ .../gn/secondary/clang/lib/Driver/BUILD.gn    |   1 +
+ 19 files changed, 614 insertions(+), 9 deletions(-)
+ create mode 100644 src/llvm-project/clang/lib/Driver/ToolChains/Plan9.cpp
+ create mode 100644 src/llvm-project/clang/lib/Driver/ToolChains/Plan9.h
+ create mode 100644 src/llvm-project/clang/test/Sema/plan9-extensions.c
+
+diff --git a/clang/include/clang/Basic/DiagnosticSemaKinds.td b/clang/include/clang/Basic/DiagnosticSemaKinds.td
+index 2cb79b6ba275a1283437b9eee072474a02c94cc4..fdd82bde09229092bec2e5ab2adfadf6346dfc1c 100644
+--- a/clang/include/clang/Basic/DiagnosticSemaKinds.td
++++ b/clang/include/clang/Basic/DiagnosticSemaKinds.td
+@@ -10297,6 +10297,8 @@ def err_anonymous_struct_not_member : Error<
+   "%select{struct or union|class}0 members">;
+ def err_anonymous_record_member_redecl : Error<
+   "member of anonymous %select{struct|union}0 redeclares %1">;
++def err_plan9_ambiguous_unnamed_member : Error<
++  "ambiguous unnamed member %select{named %1|of type %1}0 in %2">;
+ def err_anonymous_record_with_type : Error<
+   "types cannot be declared in an anonymous %select{struct|union}0">;
+ def ext_anonymous_record_with_type : Extension<
+diff --git a/clang/include/clang/Basic/LangOptions.def b/clang/include/clang/Basic/LangOptions.def
+index 1fb491a54a27815513a33a1604e2b430906541f2..b62300cc38ca8abbf0af2718873e00b9b0c630ed 100644
+--- a/clang/include/clang/Basic/LangOptions.def
++++ b/clang/include/clang/Basic/LangOptions.def
+@@ -48,6 +48,7 @@ LANGOPT(Kernel            , 1, 0, NotCompatible, "Kernel mode")
+ LANGOPT(MicrosoftExt      , 1, 0, NotCompatible, "Microsoft C++ extensions")
+ LANGOPT(ZOSExt            , 1, 0, NotCompatible, "z/OS extensions")
+ LANGOPT(MSAnonymousStructs, 1, 0, NotCompatible, "Microsoft anonymous struct and union extension")
++LANGOPT(Plan9Ext, 1, 0, NotCompatible, "Plan 9 C extensions (unnamed members by type, conversion to them)")
+ LANGOPT(AsmBlocks         , 1, 0, NotCompatible, "Microsoft inline asm blocks")
+ LANGOPT(Borland           , 1, 0, NotCompatible, "Borland extensions")
+ LANGOPT(CPlusPlus         , 1, 0, NotCompatible, "C++")
+diff --git a/clang/include/clang/Options/Options.td b/clang/include/clang/Options/Options.td
+index f893d858d526b69b070b8266c50cfcfefab4051a..8e971492c0b0d28a54238609d27d09de16ba0e08 100644
+--- a/clang/include/clang/Options/Options.td
++++ b/clang/include/clang/Options/Options.td
+@@ -3520,12 +3520,21 @@ def fms_extensions : Flag<["-"], "fms-extensions">, Group<f_Group>,
+   Visibility<[ClangOption, CC1Option, CLOption]>,
+   HelpText<"Accept some non-standard constructs supported by the Microsoft compiler">,
+   MarshallingInfoFlag<LangOpts<"MicrosoftExt">>, ImpliedByAnyOf<[fms_compatibility.KeyPath]>;
++defm plan9_extensions
++    : BoolFOption<
++          "plan9-extensions", LangOpts<"Plan9Ext">, DefaultFalse,
++          PosFlag<SetTrue, [], [ClangOption, CC1Option],
++                  "Accept Plan 9 C's extensions: unnamed struct/union members "
++                  "by tag or typedef, named by their type, and a pointer to a "
++                  "struct converted to a pointer to such a member">,
++          NegFlag<SetFalse, [], [ClangOption, CC1Option],
++                  "Do not accept Plan 9 C's extensions">>;
+ defm ms_anonymous_structs
+     : BoolFOption<
+           "ms-anonymous-structs", LangOpts<"MSAnonymousStructs">, DefaultFalse,
+           PosFlag<SetTrue, [], [ClangOption, CC1Option],
+                   "Enable Microsoft anonymous struct/union extension.",
+-                  [fms_extensions.KeyPath]>,
++                  [fms_extensions.KeyPath, fplan9_extensions.KeyPath]>,
+           NegFlag<SetFalse, [], [ClangOption, CC1Option],
+                   "Disable Microsoft anonymous struct/union extension.">>;
+ defm asm_blocks : BoolFOption<"asm-blocks",
+diff --git a/clang/include/clang/Sema/Sema.h b/clang/include/clang/Sema/Sema.h
+index 11550340ac8d2a12a301f818a2c7901fd0d6a42b..2b7998e79d55cfdcf8a05561f7baba96917ddbec 100644
+--- a/clang/include/clang/Sema/Sema.h
++++ b/clang/include/clang/Sema/Sema.h
+@@ -9082,6 +9082,24 @@ public:
+       DeclAccessPair FoundDecl = DeclAccessPair::make(nullptr, AS_none),
+       Expr *baseObjectExpr = nullptr, SourceLocation opLoc = SourceLocation());
+ 
++  enum class Plan9MemberLookup { None, Found, Ambiguous };
++
++  /// Plan 9 C (-fplan9-extensions): find, breadth first, an unnamed member
++  /// of \p RD (also within unnamed members) that \p Match accepts.  When
++  /// found, \p Path holds the fields from \p RD down to it; two matches at
++  /// the same depth are ambiguous.
++  static Plan9MemberLookup LookupPlan9UnnamedMember(
++      const RecordDecl *RD, llvm::function_ref<bool(const FieldDecl *)> Match,
++      SmallVectorImpl<FieldDecl *> &Path);
++
++  /// The name an unnamed Plan 9 member is known by: its typedef's or its
++  /// tag's, or null.
++  static const IdentifierInfo *getPlan9UnnamedMemberName(const FieldDecl *FD);
++
++  /// Plan 9 C: \p E, a pointer to a struct, as a pointer to the unnamed
++  /// member of type \p ToPointee in it (&E->Member); or null if it has none.
++  Expr *ConvertToPlan9UnnamedMember(Expr *E, QualType ToPointee);
++
+ private:
+   void CheckMemberAccessOfNoDeref(const MemberExpr *E);
+ 
+diff --git a/clang/lib/Basic/Targets.cpp b/clang/lib/Basic/Targets.cpp
+index 8c01cfca8ccb4871abdc70b5ddb002990ae67e43..29f017738f89366a30064780df3669a5c4ac5008 100644
+--- a/clang/lib/Basic/Targets.cpp
++++ b/clang/lib/Basic/Targets.cpp
+@@ -182,6 +182,9 @@ std::unique_ptr<TargetInfo> AllocateTarget(const llvm::Triple &Triple,
+     case llvm::Triple::Serenity:
+       return std::make_unique<SerenityTargetInfo<AArch64leTargetInfo>>(Triple,
+                                                                        Opts);
++    case llvm::Triple::Plan9:
++      return std::make_unique<Plan9TargetInfo<AArch64leTargetInfo>>(Triple,
++                                                                    Opts);
+     case llvm::Triple::Win32:
+       switch (Triple.getEnvironment()) {
+       case llvm::Triple::GNU:
+@@ -594,6 +597,8 @@ std::unique_ptr<TargetInfo> AllocateTarget(const llvm::Triple &Triple,
+       return std::make_unique<NetBSDI386TargetInfo>(Triple, Opts);
+     case llvm::Triple::OpenBSD:
+       return std::make_unique<OpenBSDI386TargetInfo>(Triple, Opts);
++    case llvm::Triple::Plan9:
++      return std::make_unique<Plan9I386TargetInfo>(Triple, Opts);
+     case llvm::Triple::FreeBSD:
+       return std::make_unique<FreeBSDTargetInfo<X86_32TargetInfo>>(Triple,
+                                                                    Opts);
+@@ -693,6 +698,8 @@ std::unique_ptr<TargetInfo> AllocateTarget(const llvm::Triple &Triple,
+     case llvm::Triple::Serenity:
+       return std::make_unique<SerenityTargetInfo<X86_64TargetInfo>>(Triple,
+                                                                     Opts);
++    case llvm::Triple::Plan9:
++      return std::make_unique<Plan9TargetInfo<X86_64TargetInfo>>(Triple, Opts);
+     default:
+       return std::make_unique<X86_64TargetInfo>(Triple, Opts);
+     }
+diff --git a/clang/lib/Basic/Targets/OSTargets.h b/clang/lib/Basic/Targets/OSTargets.h
+index 7c4666606d89f6a24efd3bacc666ed54a183a1fc..c8a26e3d2903fbc892eba0fcabb521b7b10778bd 100644
+--- a/clang/lib/Basic/Targets/OSTargets.h
++++ b/clang/lib/Basic/Targets/OSTargets.h
+@@ -1139,6 +1139,26 @@ public:
+   }
+ };
+ 
++// Plan 9 (9front) target: the ABI of 9space's gcc for 9front (System V
++// ELF, static), with APE as the C library.
++template <typename Target>
++class LLVM_LIBRARY_VISIBILITY Plan9TargetInfo : public OSTargetInfo<Target> {
++protected:
++  void getOSDefines(const LangOptions &Opts, const llvm::Triple &Triple,
++                    MacroBuilder &Builder) const override {
++    Builder.defineMacro("__plan9__");
++    DefineStd(Builder, "unix", Opts);
++    if (Opts.POSIXThreads)
++      Builder.defineMacro("_REENTRANT");
++  }
++
++public:
++  Plan9TargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts)
++      : OSTargetInfo<Target>(Triple, Opts) {
++    this->WIntType = TargetInfo::UnsignedInt;
++  }
++};
++
+ } // namespace targets
+ } // namespace clang
+ #endif // LLVM_CLANG_LIB_BASIC_TARGETS_OSTARGETS_H
+diff --git a/clang/lib/Basic/Targets/X86.h b/clang/lib/Basic/Targets/X86.h
+index 27f33c9d036725e1964d231c0c6adf3711707f1b..acef036de4315f4303fe45ba359019ac034ea8ba 100644
+--- a/clang/lib/Basic/Targets/X86.h
++++ b/clang/lib/Basic/Targets/X86.h
+@@ -546,6 +546,18 @@ public:
+   }
+ };
+ 
++// 9front 386: size_t and ptrdiff_t are long, as in 9space's gcc.
++class LLVM_LIBRARY_VISIBILITY Plan9I386TargetInfo
++    : public Plan9TargetInfo<X86_32TargetInfo> {
++public:
++  Plan9I386TargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts)
++      : Plan9TargetInfo<X86_32TargetInfo>(Triple, Opts) {
++    SizeType = UnsignedLong;
++    IntPtrType = SignedLong;
++    PtrDiffType = SignedLong;
++  }
++};
++
+ class LLVM_LIBRARY_VISIBILITY AppleMachOI386TargetInfo
+     : public AppleMachOTargetInfo<X86_32TargetInfo> {
+ public:
+diff --git a/clang/lib/Driver/CMakeLists.txt b/clang/lib/Driver/CMakeLists.txt
+index 506536cdc04f5f5057730f0ab3976ea94cbea950..3bee6a293653d5858022af81c9675ee624bdafb2 100644
+--- a/clang/lib/Driver/CMakeLists.txt
++++ b/clang/lib/Driver/CMakeLists.txt
+@@ -85,6 +85,7 @@ add_clang_library(clangDriver
+   ToolChains/OHOS.cpp
+   ToolChains/OpenBSD.cpp
+   ToolChains/PS4CPU.cpp
++  ToolChains/Plan9.cpp
+   ToolChains/Serenity.cpp
+   ToolChains/Solaris.cpp
+   ToolChains/SPIRV.cpp
+diff --git a/clang/lib/Driver/Driver.cpp b/clang/lib/Driver/Driver.cpp
+index e606cdc4c1cf89cedb0a5ed42b34112d87580e1e..74fe6f0ddbf5750b838ad11d0d560388d92d08ef 100644
+--- a/clang/lib/Driver/Driver.cpp
++++ b/clang/lib/Driver/Driver.cpp
+@@ -45,6 +45,7 @@
+ #include "ToolChains/SPIRV.h"
+ #include "ToolChains/SPIRVOpenMP.h"
+ #include "ToolChains/SYCL.h"
++#include "ToolChains/Plan9.h"
+ #include "ToolChains/Serenity.h"
+ #include "ToolChains/Solaris.h"
+ #include "ToolChains/TCE.h"
+@@ -7167,6 +7168,9 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
+     case llvm::Triple::Serenity:
+       TC = std::make_unique<toolchains::Serenity>(*this, Target, Args);
+       break;
++    case llvm::Triple::Plan9:
++      TC = std::make_unique<toolchains::Plan9>(*this, Target, Args);
++      break;
+     case llvm::Triple::Solaris:
+       TC = std::make_unique<toolchains::Solaris>(*this, Target, Args);
+       break;
+diff --git a/clang/lib/Driver/ToolChains/Arch/X86.cpp b/clang/lib/Driver/ToolChains/Arch/X86.cpp
+index d0108e5d99853a47ea67cf2990478a8003cbfe8a..9eb1f20307c4ae317a857a6ec4d03b55e2e11107 100644
+--- a/clang/lib/Driver/ToolChains/Arch/X86.cpp
++++ b/clang/lib/Driver/ToolChains/Arch/X86.cpp
+@@ -110,6 +110,9 @@ std::string x86::getX86TargetCPU(const Driver &D, const ArgList &Args,
+   case llvm::Triple::Haiku:
+   case llvm::Triple::OpenBSD:
+     return "i586";
++  case llvm::Triple::Plan9:
++    // 9space's gcc for 9front 386 (--with-arch=pentium): x87, no SSE.
++    return "pentium";
+   default:
+     // Fallback to p4.
+     return "pentium4";
+diff --git a/clang/lib/Driver/ToolChains/Clang.cpp b/clang/lib/Driver/ToolChains/Clang.cpp
+index db7893c547ee7e639b66433cd1ebf9885aecc070..2a9867f1d9d4380a0e30366fbcdba1a961c5e6fb 100644
+--- a/clang/lib/Driver/ToolChains/Clang.cpp
++++ b/clang/lib/Driver/ToolChains/Clang.cpp
+@@ -1220,7 +1220,8 @@ static bool isSignedCharDefault(const llvm::Triple &Triple) {
+   case llvm::Triple::armeb:
+   case llvm::Triple::thumb:
+   case llvm::Triple::thumbeb:
+-    if (Triple.isOSDarwin() || Triple.isOSWindows())
++    // Plan 9: char is signed on every machine (kencc, 9space's gcc).
++    if (Triple.isOSDarwin() || Triple.isOSWindows() || Triple.isOSPlan9())
+       return true;
+     return false;
+ 
+@@ -7516,7 +7517,8 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
+   // -fuse-cxa-atexit is default.
+   if (!Args.hasFlag(
+           options::OPT_fuse_cxa_atexit, options::OPT_fno_use_cxa_atexit,
+-          !RawTriple.isOSAIX() &&
++          // Plan 9: APE has atexit only (as 9space's gcc: no __cxa_atexit).
++          !RawTriple.isOSAIX() && !RawTriple.isOSPlan9() &&
+               (!RawTriple.isOSWindows() ||
+                RawTriple.isWindowsCygwinEnvironment()) &&
+               ((RawTriple.getVendor() != llvm::Triple::MipsTechnologies) ||
+@@ -7627,6 +7629,10 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
+   if (auto MSAnonOpt = MSAnonymousStructsOptionToUseOrNull(Args))
+     CmdArgs.push_back(MSAnonOpt);
+ 
++  // Plan 9 C (-fplan9-extensions; implies -fms-anonymous-structs in cc1).
++  Args.addOptInFlag(CmdArgs, options::OPT_fplan9_extensions,
++                    options::OPT_fno_plan9_extensions);
++
+   if (Triple.isWindowsMSVCEnvironment() && !D.IsCLMode() &&
+       Args.hasArg(options::OPT_fms_runtime_lib_EQ))
+     ProcessVSRuntimeLibrary(getToolChain(), Args, CmdArgs);
+diff --git a/clang/lib/Driver/ToolChains/Plan9.cpp b/clang/lib/Driver/ToolChains/Plan9.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..7be2807d72ad8e057e2719536fe7909f1beddaa8
+--- /dev/null
++++ b/clang/lib/Driver/ToolChains/Plan9.cpp
+@@ -0,0 +1,205 @@
++//===--- Plan9.cpp - Plan 9 (9front) ToolChain Implementation ---*- C++ -*-===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++#include "Plan9.h"
++#include "clang/Basic/Version.h"
++#include "clang/Config/config.h"
++#include "clang/Driver/CommonArgs.h"
++#include "clang/Driver/Compilation.h"
++#include "clang/Driver/Driver.h"
++#include "clang/Options/Options.h"
++#include "llvm/Option/ArgList.h"
++#include "llvm/Support/Path.h"
++#include "llvm/Support/VirtualFileSystem.h"
++
++using namespace clang::driver;
++using namespace clang::driver::toolchains;
++using namespace clang;
++using namespace llvm::opt;
++
++StringRef Plan9::objtype(const llvm::Triple &T) {
++  switch (T.getArch()) {
++  case llvm::Triple::x86_64:
++    return "amd64";
++  case llvm::Triple::x86:
++    return "386";
++  case llvm::Triple::aarch64:
++    return "arm64";
++  case llvm::Triple::riscv64:
++    return "riscv64";
++  default:
++    return T.getArchName();
++  }
++}
++
++std::string Plan9::root() const {
++  const Driver &D = getDriver();
++  return D.SysRoot.empty() ? std::string() : D.SysRoot;
++}
++
++std::string Plan9::clangRoot() const {
++  return root() + "/" + objtype(getTriple()).str() + "/clang";
++}
++
++Plan9::Plan9(const Driver &D, const llvm::Triple &Triple, const ArgList &Args)
++    : Generic_ELF(D, Triple, Args) {
++  std::string O = objtype(Triple).str();
++  // clang's libraries first (libc++, libc++abi, libunwind), then APE's
++  // (libap, libbsd and the others), then the native ones (libc, lib9, ...).
++  getFilePaths().push_back(clangRoot() + "/lib");
++  getFilePaths().push_back(root() + "/" + O + "/lib.gcc/ape");
++  getFilePaths().push_back(root() + "/" + O + "/lib.gcc");
++}
++
++std::string Plan9::getCompilerRTPath() const {
++  // The same files for a cross and a native clang: in clang's tree on 9front,
++  // not in the resource directory of the clang that runs.
++  return clangRoot() + "/lib/clang/" + CLANG_VERSION_MAJOR_STRING +
++         "/lib/plan9";
++}
++
++void Plan9::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
++                                      ArgStringList &CC1Args) const {
++  const Driver &D = getDriver();
++  if (DriverArgs.hasArg(options::OPT_nostdinc))
++    return;
++  std::string O = objtype(getTriple()).str();
++  // APE first, clang's own headers after it (as 9space's gcc orders them):
++  // APE's stddef.h, stdarg.h, limits.h are the ones; clang's give what APE
++  // lacks (intrinsics).  APE's headers are C: extern "C" in C++.
++  if (!DriverArgs.hasArg(options::OPT_nostdlibinc)) {
++    addExternCSystemInclude(DriverArgs, CC1Args,
++                            root() + "/" + O + "/include/ape");
++    addExternCSystemInclude(DriverArgs, CC1Args, root() + "/sys/include/ape");
++  }
++  if (!DriverArgs.hasArg(options::OPT_nobuiltininc))
++    addSystemInclude(DriverArgs, CC1Args, concat(D.ResourceDir, "/include"));
++}
++
++void Plan9::addClangTargetOptions(const ArgList &DriverArgs,
++                                  ArgStringList &CC1Args, BoundArch BA,
++                                  Action::OffloadKind DeviceOffloadKind) const {
++  Generic_ELF::addClangTargetOptions(DriverArgs, CC1Args, BA,
++                                     DeviceOffloadKind);
++  // APE's POSIX environment, unless the program brings its own headers
++  // (native Plan 9 C: -nostdinc -I/$objtype/include -I/sys/include).
++  if (!DriverArgs.hasArg(options::OPT_nostdinc)) {
++    CC1Args.push_back("-D_POSIX_SOURCE=");
++    CC1Args.push_back("-D_LIMITS_EXTENSION=");
++  }
++}
++
++void Plan9::AddClangCXXStdlibIncludeArgs(const ArgList &DriverArgs,
++                                         ArgStringList &CC1Args) const {
++  if (DriverArgs.hasArg(options::OPT_nostdinc, options::OPT_nostdlibinc,
++                        options::OPT_nostdincxx))
++    return;
++  switch (GetCXXStdlibType(DriverArgs)) {
++  case ToolChain::CST_Libcxx:
++    addSystemInclude(DriverArgs, CC1Args, clangRoot() + "/include/c++/v1");
++    break;
++  case ToolChain::CST_Libstdcxx:
++    // 9space's gcc's libstdc++, /$objtype/gnu: not in clang's tree.
++    getDriver().Diag(diag::err_drv_invalid_stdlib_name) << "libstdc++";
++    break;
++  }
++}
++
++void Plan9::AddCXXStdlibLibArgs(const ArgList &Args,
++                                ArgStringList &CmdArgs) const {
++  CmdArgs.push_back("-lc++");
++  CmdArgs.push_back("-lc++abi");
++}
++
++Tool *Plan9::buildLinker() const { return new tools::plan9::Linker(*this); }
++
++void tools::plan9::Linker::ConstructJob(Compilation &C, const JobAction &JA,
++                                        const InputInfo &Output,
++                                        const InputInfoList &Inputs,
++                                        const ArgList &Args,
++                                        const char *LinkingOutput) const {
++  const auto &TC = static_cast<const toolchains::Plan9 &>(getToolChain());
++  const Driver &D = TC.getDriver();
++  ArgStringList CmdArgs;
++  std::string O = toolchains::Plan9::objtype(TC.getTriple()).str();
++
++  bool Relocatable = Args.hasArg(options::OPT_r);
++  bool NoStdLib = Args.hasArg(options::OPT_nostdlib) || Relocatable;
++  bool NoDefaultLibs = NoStdLib || Args.hasArg(options::OPT_nodefaultlibs);
++  bool NoStartFiles = NoStdLib || Args.hasArg(options::OPT_nostartfiles);
++
++  if (!D.SysRoot.empty())
++    CmdArgs.push_back(Args.MakeArgString("--sysroot=" + D.SysRoot));
++
++  if (!Relocatable) {
++    // As 9space's gcc: a static program, text and data in two segments
++    // (the kernel refuses a segment both writable and executable), the
++    // tree's linker script.
++    CmdArgs.push_back("-static");
++    CmdArgs.push_back("-z");
++    CmdArgs.push_back("noseparate-code");
++    CmdArgs.push_back("-z");
++    CmdArgs.push_back("max-page-size=0x1000");
++    CmdArgs.push_back("-z");
++    CmdArgs.push_back("noexecstack");
++    // The unwind tables' index (.eh_frame_hdr): libunwind finds it by
++    // plan9.ld's __eh_frame_hdr_start.
++    CmdArgs.push_back("--eh-frame-hdr");
++    if (!Args.hasArg(options::OPT_T)) {
++      CmdArgs.push_back("-T");
++      CmdArgs.push_back(Args.MakeArgString(TC.root() + "/" + O + "/plan9.ld"));
++    }
++    // libc's and APE's _main call main: __wrap_main (compiler-rt's
++    // plan9_main.c) sets the floating point unit up and runs the
++    // constructors first.
++    if (!NoDefaultLibs)
++      CmdArgs.push_back("--wrap=main");
++  }
++
++  if (Output.isFilename()) {
++    CmdArgs.push_back("-o");
++    CmdArgs.push_back(Output.getFilename());
++  }
++
++  if (!NoStartFiles)
++    CmdArgs.push_back(Args.MakeArgString(
++        TC.getCompilerRT(Args, "crtbegin", ToolChain::FT_Object)));
++
++  Args.addAllArgs(CmdArgs, {options::OPT_L, options::OPT_u});
++  TC.AddFilePathLibArgs(Args, CmdArgs);
++  Args.addAllArgs(CmdArgs, {options::OPT_T_Group, options::OPT_s,
++                            options::OPT_t, options::OPT_r});
++  addLinkerCompressDebugSectionsOption(TC, Args, CmdArgs);
++
++  AddLinkerInputs(TC, Inputs, Args, CmdArgs, JA);
++
++  if (!NoDefaultLibs) {
++    if (TC.ShouldLinkCXXStdlib(Args))
++      TC.AddCXXStdlibLibArgs(Args, CmdArgs);
++    // Silence warnings when linking C code with a C++ '-stdlib' argument.
++    Args.ClaimAllArgs(options::OPT_stdlib_EQ);
++    CmdArgs.push_back("--start-group");
++    // compiler-rt's builtins and, for C++, libunwind.
++    AddRunTimeLibs(TC, D, CmdArgs, Args);
++    CmdArgs.push_back("-lbsd");
++    CmdArgs.push_back("-lap");
++    CmdArgs.push_back("--end-group");
++    // -pthread: APE's pthreads are in libap.
++    Args.ClaimAllArgs(options::OPT_pthread);
++    Args.ClaimAllArgs(options::OPT_pthreads);
++  }
++
++  if (!NoStartFiles)
++    CmdArgs.push_back(Args.MakeArgString(
++        TC.getCompilerRT(Args, "crtend", ToolChain::FT_Object)));
++
++  const char *Exec = Args.MakeArgString(TC.GetLinkerPath());
++  C.addCommand(std::make_unique<Command>(JA, *this,
++                                         ResponseFileSupport::AtFileCurCP(),
++                                         Exec, CmdArgs, Inputs, Output));
++}
+diff --git a/clang/lib/Driver/ToolChains/Plan9.h b/clang/lib/Driver/ToolChains/Plan9.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..91e56a0e063980e92b47667d3b016e48f654d7db
+--- /dev/null
++++ b/clang/lib/Driver/ToolChains/Plan9.h
+@@ -0,0 +1,107 @@
++//===--- Plan9.h - Plan 9 (9front) ToolChain Implementation -----*- C++ -*-===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++//
++// 9front (Plan 9): static ELF programs over APE (/$objtype/include/ape,
++// /sys/include/ape, /$objtype/lib.gcc/ape), linked by ld.lld with the tree's
++// /$objtype/plan9.ld.  clang's own files are the tree /$objtype/clang (bin,
++// include/c++/v1, lib: libc++, libc++abi, libunwind, compiler-rt).  A cross
++// clang finds both under --sysroot, a native one under /.
++//
++//===----------------------------------------------------------------------===//
++
++#ifndef LLVM_CLANG_LIB_DRIVER_TOOLCHAINS_PLAN9_H
++#define LLVM_CLANG_LIB_DRIVER_TOOLCHAINS_PLAN9_H
++
++#include "Gnu.h"
++#include "clang/Driver/Tool.h"
++#include "clang/Driver/ToolChain.h"
++
++namespace clang {
++namespace driver {
++namespace tools {
++namespace plan9 {
++
++class LLVM_LIBRARY_VISIBILITY Linker final : public Tool {
++public:
++  Linker(const ToolChain &TC) : Tool("plan9::Linker", "ld.lld", TC) {}
++
++  bool hasIntegratedCPP() const override { return false; }
++  bool isLinkJob() const override { return true; }
++
++  void ConstructJob(Compilation &C, const JobAction &JA,
++                    const InputInfo &Output, const InputInfoList &Inputs,
++                    const llvm::opt::ArgList &TCArgs,
++                    const char *LinkingOutput) const override;
++};
++
++} // end namespace plan9
++} // end namespace tools
++
++namespace toolchains {
++
++class LLVM_LIBRARY_VISIBILITY Plan9 final : public Generic_ELF {
++public:
++  Plan9(const Driver &D, const llvm::Triple &Triple,
++        const llvm::opt::ArgList &Args);
++
++  /// The machine's name in Plan 9's paths: amd64, 386, arm64.
++  static StringRef objtype(const llvm::Triple &T);
++  /// The root of the Plan 9 file tree: --sysroot, or / natively.
++  std::string root() const;
++  /// clang's tree on 9front, /$objtype/clang under root().
++  std::string clangRoot() const;
++
++  void
++  AddClangSystemIncludeArgs(const llvm::opt::ArgList &DriverArgs,
++                            llvm::opt::ArgStringList &CC1Args) const override;
++  void
++  addClangTargetOptions(const llvm::opt::ArgList &DriverArgs,
++                        llvm::opt::ArgStringList &CC1Args, BoundArch BA,
++                        Action::OffloadKind DeviceOffloadKind) const override;
++  void AddClangCXXStdlibIncludeArgs(
++      const llvm::opt::ArgList &DriverArgs,
++      llvm::opt::ArgStringList &CC1Args) const override;
++  void AddCXXStdlibLibArgs(const llvm::opt::ArgList &Args,
++                           llvm::opt::ArgStringList &CmdArgs) const override;
++
++  std::string getCompilerRTPath() const override;
++
++  RuntimeLibType GetDefaultRuntimeLibType() const override {
++    return ToolChain::RLT_CompilerRT;
++  }
++  CXXStdlibType GetDefaultCXXStdlibType() const override {
++    return ToolChain::CST_Libcxx;
++  }
++  UnwindLibType GetDefaultUnwindLibType() const override {
++    return ToolChain::UNW_CompilerRT;
++  }
++  const char *getDefaultLinker() const override { return "ld.lld"; }
++
++  // Programs are static and at fixed addresses (plan9.ld): no PIC, no PIE.
++  bool isPICDefault() const override { return false; }
++  bool isPIEDefault(const llvm::opt::ArgList &) const override {
++    return false;
++  }
++  bool isPICDefaultForced() const override { return false; }
++  bool HasNativeLLVMSupport() const override { return true; }
++  bool IsIntegratedAssemblerDefault() const override { return true; }
++
++  UnwindTableLevel
++  getDefaultUnwindTableLevel(const llvm::opt::ArgList &Args) const override {
++    return UnwindTableLevel::Asynchronous;
++  }
++
++protected:
++  Tool *buildLinker() const override;
++};
++
++} // end namespace toolchains
++} // end namespace driver
++} // end namespace clang
++
++#endif // LLVM_CLANG_LIB_DRIVER_TOOLCHAINS_PLAN9_H
+diff --git a/clang/lib/Sema/SemaChecking.cpp b/clang/lib/Sema/SemaChecking.cpp
+index 2a8395e26d0bd1231b3429c6974cbeac85a22559..dbc60aab1caa8d0f6fcb246e20cb321d4d3a1c0d 100644
+--- a/clang/lib/Sema/SemaChecking.cpp
++++ b/clang/lib/Sema/SemaChecking.cpp
+@@ -15472,8 +15472,9 @@ bool Sema::CheckParmsForFunctionDef(ArrayRef<ParmVarDecl *> Parameters,
+     // declaration of each parameter shall include an identifier.
+     if (CheckParameterNames && Param->getIdentifier() == nullptr &&
+         !Param->isImplicit() && !getLangOpts().CPlusPlus) {
+-      // Diagnose this as an extension in C17 and earlier.
+-      if (!getLangOpts().C23)
++      // Diagnose this as an extension in C17 and earlier (not in Plan 9
++      // C, where it is the language's).
++      if (!getLangOpts().C23 && !getLangOpts().Plan9Ext)
+         Diag(Param->getLocation(), diag::ext_parameter_name_omitted_c23);
+     }
+ 
+diff --git a/clang/lib/Sema/SemaDecl.cpp b/clang/lib/Sema/SemaDecl.cpp
+index 6a25a799aa219c07d1eb81f1da5c44ca78a5a196..f79b622b806458d31032a556cc509140c269f280 100644
+--- a/clang/lib/Sema/SemaDecl.cpp
++++ b/clang/lib/Sema/SemaDecl.cpp
+@@ -5390,8 +5390,10 @@ Decl *Sema::ParsedFreeStandingDeclSpec(Scope *S, AccessSpecifier AS,
+       RecordDecl *Record = Tag ? dyn_cast<RecordDecl>(Tag)
+                                : DS.getRepAsType().get()->getAsRecordDecl();
+       if (Record && getLangOpts().MSAnonymousStructs) {
+-        Diag(DS.getBeginLoc(), diag::ext_ms_anonymous_record)
+-            << Record->isUnion() << DS.getSourceRange();
++        // Plan 9 C's own construct there, not an extension.
++        if (!getLangOpts().Plan9Ext)
++          Diag(DS.getBeginLoc(), diag::ext_ms_anonymous_record)
++              << Record->isUnion() << DS.getSourceRange();
+         return BuildMicrosoftCAnonymousStruct(S, DS, Record);
+       }
+ 
+diff --git a/clang/lib/Sema/SemaExpr.cpp b/clang/lib/Sema/SemaExpr.cpp
+index 5d4c5ff7d5c68ed8bb001e9acac03a846d5cd1d3..55cac5f17337189ae4dc60c9c330a965da54be44 100644
+--- a/clang/lib/Sema/SemaExpr.cpp
++++ b/clang/lib/Sema/SemaExpr.cpp
+@@ -10274,6 +10274,16 @@ AssignConvertType Sema::CheckSingleAssignmentConstraints(QualType LHSType,
+   // unqualified type of the LHS.
+   QualType LHSTypeAfterConversion = LHSType.getAtomicUnqualifiedType();
+ 
++  // Plan 9 C: a pointer to a struct converts to a pointer to an unnamed
++  // member of it (&p->Lock for a Lock*), in assignments, arguments and
++  // returns.
++  if (getLangOpts().Plan9Ext && !getLangOpts().CPlusPlus) {
++    if (const auto *LPT = LHSTypeAfterConversion->getAs<PointerType>())
++      if (Expr *E =
++              ConvertToPlan9UnnamedMember(RHS.get(), LPT->getPointeeType()))
++        RHS = E;
++  }
++
+   // C99 6.5.16.1p1: the left operand is a pointer and the right is
+   // a null pointer constant <C23>or its type is nullptr_t;</C23>.
+   if ((LHSTypeAfterConversion->isPointerType() ||
+@@ -16988,8 +16998,9 @@ void Sema::ActOnBlockArguments(SourceLocation CaretLoc, Declarator &ParamInfo,
+       ParmVarDecl *Param = ExplicitSignature.getParam(I);
+       if (Param->getIdentifier() == nullptr && !Param->isImplicit() &&
+           !Param->isInvalidDecl() && !getLangOpts().CPlusPlus) {
+-        // Diagnose this as an extension in C17 and earlier.
+-        if (!getLangOpts().C23)
++        // Diagnose this as an extension in C17 and earlier (not in Plan 9
++        // C, where it is the language's).
++        if (!getLangOpts().C23 && !getLangOpts().Plan9Ext)
+           Diag(Param->getLocation(), diag::ext_parameter_name_omitted_c23);
+       }
+       Params.push_back(Param);
+diff --git a/clang/lib/Sema/SemaExprMember.cpp b/clang/lib/Sema/SemaExprMember.cpp
+index 62ecc52c0374b1e0aaed7d7d77710e300eb60cf9..5a6e9773a393ffd1b64374e1b8fa33f5670d2d2c 100644
+--- a/clang/lib/Sema/SemaExprMember.cpp
++++ b/clang/lib/Sema/SemaExprMember.cpp
+@@ -675,9 +675,141 @@ static bool LookupMemberExprInRecord(Sema &SemaRef, LookupResult &R,
+                                       /*EnteringContext=*/false, TemplateKWLoc);
+ 
+   SemaRef.LookupParsedName(R, /*S=*/nullptr, &SS, ObjectType);
++
++  // Plan 9 C: an unnamed member is known by its type's name (p->Lock).
++  if (R.empty() && SemaRef.getLangOpts().Plan9Ext &&
++      !SemaRef.getLangOpts().CPlusPlus && R.getLookupName().isIdentifier()) {
++    if (const RecordDecl *RD = RTy->getAsRecordDecl()) {
++      const IdentifierInfo *Name = R.getLookupName().getAsIdentifierInfo();
++      SmallVector<FieldDecl *, 4> Path;
++      switch (Sema::LookupPlan9UnnamedMember(
++          RD,
++          [&](const FieldDecl *FD) {
++            return Sema::getPlan9UnnamedMemberName(FD) == Name;
++          },
++          Path)) {
++      case Sema::Plan9MemberLookup::None:
++        break;
++      case Sema::Plan9MemberLookup::Ambiguous:
++        SemaRef.Diag(R.getNameLoc(), diag::err_plan9_ambiguous_unnamed_member)
++            << 0 << Name << RD;
++        return true;
++      case Sema::Plan9MemberLookup::Found:
++        if (Path.size() == 1) {
++          R.addDecl(Path[0]);
++        } else {
++          // Deeper: an indirect field named by the type over the chain of
++          // unnamed members, as for the members of an anonymous struct.
++          auto **Chain = new (SemaRef.Context) NamedDecl *[Path.size()];
++          llvm::copy(Path, Chain);
++          auto *IFD = IndirectFieldDecl::Create(
++              SemaRef.Context, const_cast<RecordDecl *>(RD), R.getNameLoc(),
++              Name, Path.back()->getType(), {Chain, Path.size()});
++          IFD->setImplicit();
++          IFD->setAccess(AS_public);
++          R.addDecl(IFD);
++        }
++        R.resolveKind();
++        break;
++      }
++    }
++  }
+   return false;
+ }
+ 
++const IdentifierInfo *Sema::getPlan9UnnamedMemberName(const FieldDecl *FD) {
++  if (FD->getDeclName() || !FD->getType()->isRecordType())
++    return nullptr;
++  const TypeSourceInfo *TSI = FD->getTypeSourceInfo();
++  if (!TSI)
++    return nullptr;
++  QualType T = TSI->getType();
++  if (const auto *TT = T->getAs<TypedefType>())
++    return TT->getDecl()->getIdentifier();
++  if (const RecordDecl *RD = T->getAsRecordDecl())
++    return RD->getIdentifier();
++  return nullptr;
++}
++
++Sema::Plan9MemberLookup Sema::LookupPlan9UnnamedMember(
++    const RecordDecl *RD, llvm::function_ref<bool(const FieldDecl *)> Match,
++    SmallVectorImpl<FieldDecl *> &Path) {
++  // Breadth first: the shallowest member wins, as names of a nearer scope.
++  SmallVector<SmallVector<FieldDecl *, 4>, 4> Level, Next;
++  Level.emplace_back();
++  for (unsigned Depth = 0; !Level.empty() && Depth < 16; ++Depth) {
++    unsigned Hits = 0;
++    for (const auto &P : Level) {
++      const RecordDecl *R =
++          P.empty() ? RD : P.back()->getType()->getAsRecordDecl();
++      if (!R || !(R = R->getDefinition()))
++        continue;
++      for (FieldDecl *FD : R->fields()) {
++        if (FD->getDeclName() || !FD->getType()->isRecordType())
++          continue;
++        SmallVector<FieldDecl *, 4> Q(P);
++        Q.push_back(FD);
++        if (Match(FD) && Hits++ == 0)
++          Path.assign(Q.begin(), Q.end());
++        Next.push_back(std::move(Q));
++      }
++    }
++    if (Hits > 1) {
++      Path.clear();
++      return Plan9MemberLookup::Ambiguous;
++    }
++    if (Hits)
++      return Plan9MemberLookup::Found;
++    Level.swap(Next);
++    Next.clear();
++  }
++  return Plan9MemberLookup::None;
++}
++
++Expr *Sema::ConvertToPlan9UnnamedMember(Expr *E, QualType ToPointee) {
++  const auto *PT = E->getType()->getAs<PointerType>();
++  if (!PT)
++    return nullptr;
++  QualType From = PT->getPointeeType();
++  const RecordDecl *RD = From->getAsRecordDecl();
++  if (!RD || !ToPointee->isRecordType() ||
++      Context.hasSameUnqualifiedType(From, ToPointee))
++    return nullptr;
++  SmallVector<FieldDecl *, 4> Path;
++  switch (LookupPlan9UnnamedMember(
++      RD,
++      [&](const FieldDecl *FD) {
++        return Context.hasSameUnqualifiedType(FD->getType(), ToPointee);
++      },
++      Path)) {
++  case Plan9MemberLookup::None:
++    return nullptr;
++  case Plan9MemberLookup::Ambiguous:
++    Diag(E->getExprLoc(), diag::err_plan9_ambiguous_unnamed_member)
++        << 1 << ToPointee << RD;
++    return nullptr;
++  case Plan9MemberLookup::Found:
++    break;
++  }
++  // &E->A.B...: the member's address; its qualifiers are From's.
++  SourceLocation Loc = E->getExprLoc();
++  CXXScopeSpec SS;
++  Expr *Result = E;
++  bool Arrow = true;
++  for (FieldDecl *FD : Path) {
++    ExprResult M = BuildFieldReferenceExpr(
++        Result, Arrow, SourceLocation(), SS, FD,
++        DeclAccessPair::make(FD, FD->getAccess()),
++        DeclarationNameInfo(FD->getDeclName(), Loc));
++    if (M.isInvalid())
++      return nullptr;
++    Result = M.get();
++    Arrow = false;
++  }
++  ExprResult A = CreateBuiltinUnaryOp(Loc, UO_AddrOf, Result);
++  return A.isInvalid() ? nullptr : A.get();
++}
++
+ static ExprResult LookupMemberExpr(Sema &S, LookupResult &R,
+                                    ExprResult &BaseExpr, bool &IsArrow,
+                                    SourceLocation OpLoc, CXXScopeSpec &SS,
+@@ -1052,6 +1184,12 @@ Sema::BuildMemberReferenceExpr(Expr *BaseExpr, QualType BaseExprType,
+   if (FieldDecl *FD = dyn_cast<FieldDecl>(MemberDecl)) {
+     if (ConvertBaseExprToGLValue())
+       return ExprError();
++    // Plan 9 C: an unnamed member found by its type's name (p->Lock); the
++    // expression keeps the field's own, empty, name.
++    if (!FD->getDeclName() && MemberNameInfo.getName())
++      return BuildFieldReferenceExpr(
++          BaseExpr, IsArrow, OpLoc, SS, FD, FoundDecl,
++          DeclarationNameInfo(DeclarationName(), MemberNameInfo.getLoc()));
+     return BuildFieldReferenceExpr(BaseExpr, IsArrow, OpLoc, SS, FD, FoundDecl,
+                                    MemberNameInfo);
+   }
+diff --git a/clang/test/Sema/plan9-extensions.c b/clang/test/Sema/plan9-extensions.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..ca15cb441795998937a18d1903dac8309460729e
+--- /dev/null
++++ b/clang/test/Sema/plan9-extensions.c
+@@ -0,0 +1,57 @@
++// RUN: %clang_cc1 -triple x86_64-unknown-plan9 -fsyntax-only -verify -fplan9-extensions %s
++// RUN: %clang_cc1 -triple x86_64-unknown-linux -fsyntax-only -verify=noext %s
++
++typedef struct Lock Lock;
++struct Lock { int key; };
++typedef struct QLock QLock;
++struct QLock { Lock; int locked; };            // noext-warning {{declaration does not declare anything}}
++typedef struct Rendez Rendez;
++struct Rendez { void *p; };
++
++typedef struct Proc Proc;
++struct Proc {
++  char name[8];
++  QLock;                                       // noext-warning {{declaration does not declare anything}}
++  Rendez;                                      // noext-warning {{declaration does not declare anything}}
++  struct Ref { long ref; };                    // noext-warning {{declaration does not declare anything}}
++};
++
++void lock(Lock *);
++void qlock(QLock *);
++void sleep(Rendez *);
++long incref(struct Ref *);
++
++#ifdef __plan9__
++// Two unnamed members with a member of the same name: an error, as with gcc
++// (Plan 9's compilers let the first one shadow the other).
++struct Twice { QLock; Lock; };
++// expected-error@5 {{member of anonymous struct redeclares 'key'}} expected-note@5 {{previous declaration is here}}
++
++// Members of the same type at the same depth: ambiguous.
++typedef struct Empty Empty;
++struct Empty {};
++struct E1 { Empty; };
++struct E2 { Empty; };
++struct Both { struct E1; struct E2; };
++void empty(Empty *);                           // expected-note {{passing argument to parameter here}}
++
++void f(Proc *p, struct Both *b) {
++  qlock(p);                 // a pointer to an unnamed member: &p->QLock
++  qlock(&p->QLock);         // the member by its typedef's name
++  sleep(p);                 // at an offset
++  incref(p);                // by tag
++  p->Ref.ref++;
++  p->locked = 1;            // its members, as for an anonymous struct
++  lock(p);                  // deeper: &p->QLock.Lock
++  lock(&p->Lock);
++  p->Lock.key = 0;
++  QLock *q = p;
++  const Proc *cp = p;
++  QLock *q2 = cp;           // expected-warning {{discards qualifiers}}
++  (void)q; (void)q2;
++  empty(b);                 // expected-error {{ambiguous unnamed member of type 'Empty'}} expected-error {{incompatible pointer types}}
++  (void)b->Empty;           // expected-error {{ambiguous unnamed member named 'Empty'}}
++}
++
++Rendez *g(Proc *p) { return p; }
++#endif
+diff --git a/llvm/utils/gn/secondary/clang/lib/Driver/BUILD.gn b/llvm/utils/gn/secondary/clang/lib/Driver/BUILD.gn
+index 9ef25d1ce0f12daedcddac864cce0da05aeac5ad..2db395c3b50ebe8b8dd0eff9c45dac279eaabdbd 100644
+--- a/llvm/utils/gn/secondary/clang/lib/Driver/BUILD.gn
++++ b/llvm/utils/gn/secondary/clang/lib/Driver/BUILD.gn
+@@ -101,6 +101,7 @@ static_library("Driver") {
+     "ToolChains/SPIRV.cpp",
+     "ToolChains/SPIRVOpenMP.cpp",
+     "ToolChains/SYCL.cpp",
++    "ToolChains/Plan9.cpp",
+     "ToolChains/Serenity.cpp",
+     "ToolChains/Solaris.cpp",
+     "ToolChains/TCE.cpp",

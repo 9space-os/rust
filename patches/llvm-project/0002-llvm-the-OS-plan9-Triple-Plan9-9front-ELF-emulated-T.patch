@@ -1,0 +1,57 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stefan Hertenberger <erde74@gmail.com>
+Date: Thu, 26 Nov 2026 00:27:12 +0100
+Subject: [PATCH] llvm: the OS plan9 (Triple::Plan9, 9front): ELF, emulated TLS
+ by default (9front sets no %fs); before it parsed as an unknown OS
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ llvm/include/llvm/TargetParser/Triple.h       | 8 ++++++--
+ llvm/include/llvm/TargetParser/TripleName.def | 1 +
+ 2 files changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/llvm/include/llvm/TargetParser/Triple.h b/llvm/include/llvm/TargetParser/Triple.h
+index c5af232523c695764e369a29ec85e875e9ab1696..ddae67fcae4b24272f87affc3f1091638dfa6d9b 100644
+--- a/llvm/include/llvm/TargetParser/Triple.h
++++ b/llvm/include/llvm/TargetParser/Triple.h
+@@ -349,7 +349,8 @@ public:
+     Firmware,
+     QURT,
+     H2,
+-    LastOSType = H2
++    Plan9, // 9front (Plan 9)
++    LastOSType = Plan9
+   };
+   enum EnvironmentType {
+     UnknownEnvironment,
+@@ -861,6 +862,9 @@ public:
+   /// Tests whether the OS is H2.
+   bool isOSH2() const { return getOS() == Triple::H2; }
+ 
++  /// Tests whether the OS is Plan 9 (9front).
++  bool isOSPlan9() const { return getOS() == Triple::Plan9; }
++
+   /// Tests whether the OS uses the ELF binary format.
+   bool isOSBinFormatELF() const { return getObjectFormat() == Triple::ELF; }
+ 
+@@ -1275,7 +1279,7 @@ public:
+   /// Note: Android API level 29 (10) introduced ELF TLS.
+   bool hasDefaultEmulatedTLS() const {
+     return (isAndroid() && isAndroidVersionLT(29)) || isOSOpenBSD() ||
+-           isWindowsCygwinEnvironment() || isOHOSFamily();
++           isWindowsCygwinEnvironment() || isOHOSFamily() || isOSPlan9();
+   }
+ 
+   /// True if the target uses TLSDESC by default.
+diff --git a/llvm/include/llvm/TargetParser/TripleName.def b/llvm/include/llvm/TargetParser/TripleName.def
+index bbc03b3188019a24e9e937bb1cbb3eded7d4b1e0..f7fa05d3b536521784c936f1fae24234fa67e2c0 100644
+--- a/llvm/include/llvm/TargetParser/TripleName.def
++++ b/llvm/include/llvm/TargetParser/TripleName.def
+@@ -81,6 +81,7 @@ TRIPLE_OS(ChipStar, "chipstar")
+ TRIPLE_OS(Firmware, "firmware")
+ TRIPLE_OS(QURT, "qurt")
+ TRIPLE_OS(H2, "h2")
++TRIPLE_OS(Plan9, "plan9")
+ 
+ #undef TRIPLE_OS
+ #undef TRIPLE_OS_ALIAS
