@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build the test programs (tests/*.rs) with the stage-1 rustc for x86_64-unknown-plan9 and
-# run them in the 9front guest (tests/guest.sh: the tree's scripts/guest/boot-cli.sh). One
+# run them in the 9front guest (tests/guest.sh: the tree's sys/src/build/host/guest/boot-cli.sh). One
 # line per test: "name ok" or "name FAIL ...". Log: logs/guest-tests.log (386:
 # guest-tests.386.log; arm64, riscv64 likewise).
 # objtype=386: i686-unknown-plan9 in a 9pc guest (the 9front tree built for 386: PLAN9);

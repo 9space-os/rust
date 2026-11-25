@@ -5,7 +5,7 @@
 #   out/$objtype/rust-T.tgz        rustc, cargo, std (bin/rustc, bin/cargo, lib, README)
 #   out/$objtype/rust-tools-T.tgz  rustdoc, rustfmt, cargo-fmt, clippy-driver, cargo-clippy
 # Paths in them from /, so on 9front:  cd /; tar xzf rust-T.tgz  (9front's tar).
-# The tree's scripts/guest/stage-dist.sh puts the tree on the install CD only if
+# The tree's sys/src/build/host/guest/stage-dist.sh puts the tree on the install CD only if
 # asked (RUST_OUT=$RUST_DIR/out/$objtype).
 #   bin/rustc               the stage-2 rustc for 9front (static, LLVM inside)
 #   bin/cargo               scripts/build-cargo.sh's

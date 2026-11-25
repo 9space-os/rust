@@ -71,10 +71,10 @@ Their changes are patches like the other crates' (`patches/crates`,
 
 9front's tree keeps a copy with full sources in `sys/src/rust` (it builds
 offline and on 9front itself, where this repository is not): after a change
-here (`scripts/crates-patch.sh diff`), 9front's `scripts/rust/crates.sh`
+here (`scripts/crates-patch.sh diff`), 9front's `sys/src/build/rust/crates.sh`
 copies them over; its tests/static compares. 9front's `tests/winit`
 (winittest, eguitest: egui on the processor; eframetest: eframe falling back to
-the processor without a GPU, also without wgpu) uses that copy; its `scripts/rust/vendor.sh` vendors the rest. Not yet: glutin (egui's GL), several windows a process, IME.
+the processor without a GPU, also without wgpu) uses that copy; its `sys/src/build/rust/vendor.sh` vendors the rest. Not yet: glutin (egui's GL), several windows a process, IME.
 
 ## Build
 
@@ -110,5 +110,5 @@ its gcc):
 cargo needs the CA roots in `/sys/lib/tls/ca.pem` for crates.io. `tests/tools.sh` unpacks
 the archives in the guest and uses rustc, cargo, rustdoc, rustfmt and clippy there. To put
 the unpacked tree on the install CD instead: `RUST_OUT=$RUST_DIR/out/amd64` for
-the tree's `scripts/guest/mkiso.sh`.
+the tree's `sys/src/build/host/guest/mkiso.sh`.
 
