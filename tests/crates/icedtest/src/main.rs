@@ -179,5 +179,10 @@ fn main() -> iced::Result {
         .subscription(App::subscription)
         .theme(|_: &App| Theme::Dark)
         .title("icedtest")
+        // the program sizes its window (plan9's winit, wsys): about the
+        // rectangle tests/winit starts it in (window -r 100 100 500 400), where
+        // its clicks fall on the text field and the button; iced's default
+        // (1024x768) would fill the screen
+        .window_size((392.0, 292.0))
         .run()
 }
