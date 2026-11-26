@@ -841,3 +841,18 @@ series and run tests/run.sh, rustc.sh to confirm.
 name as `<objtype>-unknown-plan9`), so a 9front clang makes the programs of
 the machine mk is building for. Without effect for rustc: it gives LLVM the
 target triple itself.
+
+## The plan9 targets neutral between gcc and clang (2026-11-26)
+
+On the user's decision the Plan 9 targets no longer name gcc's runtime
+(patch rust 0030): `no_default_libraries` is off, so the C driver links
+what it links for any of its programs -- its start files, `--wrap=main`,
+its runtime (gcc: libgcc with its unwinder; clang: compiler-rt and
+libunwind, llvm-project 0008) and APE; rustc adds only `-lp9 -lbsd -lap`
+in a group and the entry `__p9__main`. The default linker is the C++
+driver (`x86_64-pc-plan9-g++` & co.): a program that links C++ (Mesa's, in
+libvulkan.a) gets its library from it (libstdc++, libc++), and the crates
+no longer link `stdc++` themselves (wgpu-hal 28's patch; the tree's wsys,
+cargo.sh with `$XCXX`). Built: stage 1, stage 2, cargo, out/ for amd64,
+386, arm64. tests/run.sh amd64 15/15 (unwind, cxxmain); the tree's Rust
+programs with gcc and with clang (tree-clang): gpu 203/203 each.

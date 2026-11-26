@@ -422,15 +422,15 @@ diff -ruN a/src/vulkan/instance.rs b/src/vulkan/instance.rs
 +        let entry = unsafe {
 +            // after wgpu-hal on the link line: a static library, and what
 +            // it needs after it: APE's libz (Mesa's zlib is the tree's),
-+            // APE's libdraw (the plan9 WSI) with lib9, libfmt, libutf, and
-+            // libstdc++ (Mesa's C++)
++            // APE's libdraw (the plan9 WSI) with lib9, libfmt, libutf; Mesa's
++            // C++ library the program's linker adds (the C++ driver: g++'s
++            // libstdc++, clang++'s libc++)
 +            #[link(name = "vulkan")]
 +            #[link(name = "z")]
 +            #[link(name = "draw")]
 +            #[link(name = "9")]
 +            #[link(name = "fmt")]
 +            #[link(name = "utf")]
-+            #[link(name = "stdc++")]
 +            unsafe extern "system" {
 +                fn vkGetInstanceProcAddr(
 +                    instance: vk::Instance,

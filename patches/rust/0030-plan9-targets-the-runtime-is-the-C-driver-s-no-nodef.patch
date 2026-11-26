@@ -1,0 +1,139 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stefan Hertenberger <erde74@gmail.com>
+Date: Thu, 26 Nov 2026 23:42:01 +0100
+Subject: [PATCH] plan9 targets: the runtime is the C driver's (no
+ -nodefaultlibs, no fixed -lgcc or --wrap: gcc's libgcc or clang's compiler-rt
+ and libunwind), linked by the C++ driver (g++, clang++: a program that links
+ C++, Mesa's in libvulkan.a, gets its library)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ compiler/rustc_target/src/spec/base/plan9.rs  | 44 +++++++++++--------
+ .../src/spec/targets/aarch64_unknown_plan9.rs |  3 +-
+ .../src/spec/targets/i686_unknown_plan9.rs    |  3 +-
+ .../spec/targets/riscv64gc_unknown_plan9.rs   |  3 +-
+ .../src/spec/targets/x86_64_unknown_plan9.rs  |  3 +-
+ 5 files changed, 33 insertions(+), 23 deletions(-)
+
+diff --git a/compiler/rustc_target/src/spec/base/plan9.rs b/compiler/rustc_target/src/spec/base/plan9.rs
+index 8b8e16ded17271c48e8c5d030e5d4d36aa270fa2..c178b7c4f5b2602fa7dc9e30a035ff629c71e72a 100644
+--- a/compiler/rustc_target/src/spec/base/plan9.rs
++++ b/compiler/rustc_target/src/spec/base/plan9.rs
+@@ -1,17 +1,20 @@
+-//! 9front (Plan 9): native Plan 9 programs, linked by the gcc of 9front's gcc port
+-//! (`x86_64-pc-plan9-gcc`) against the system's own libc as `libp9.a` (`/$objtype/lib.gcc`:
+-//! libc.a with every name renamed `__p9_*`), so that APE, Plan 9's POSIX layer, can be in
+-//! the program beside it: the C and C++ of crates, built as for any APE program, and what
+-//! libgcc and the compiler call by C names (memcpy, abort). APE attaches itself to the
+-//! native program (9front's `ap/gnu/native.c`); its allocator is std's (one heap).
++//! 9front (Plan 9): native Plan 9 programs, linked by a C driver of 9space -- the gcc
++//! of its gcc port (`x86_64-pc-plan9-gcc`) or its clang (`--target=x86_64-unknown-plan9`)
++//! -- against the system's own libc as `libp9.a` (`/$objtype/lib.gcc`: libc.a with every
++//! name renamed `__p9_*`), so that APE, Plan 9's POSIX layer, can be in the program beside
++//! it: the C and C++ of crates, built as for any APE program, and what the compiler's
++//! runtime calls by C names (memcpy, abort). APE attaches itself to the native program
++//! (9front's `ap/gnu/native.c`); its allocator is std's (one heap).
+ //!
+-//! The driver's linker script (`/$objtype/plan9.ld`) gives a static ELF executable with
+-//! a text and a data segment, which the kernel loads. Without `-nodefaultlibs` the driver
+-//! would link APE (`-lap`); it is passed (`no_default_libraries`), and the rest of what it
+-//! leaves out comes back here: `--wrap=main` makes libc's `_main` call libgcc's
++//! The driver links as for any of its programs: its linker script (`/$objtype/plan9.ld`:
++//! a static ELF executable with a text and a data segment, which the kernel loads), its
++//! start files, its runtime (gcc's libgcc, clang's compiler-rt and libunwind: the unwinder
++//! too) and APE (`-lbsd -lap`), and `--wrap=main`: libc's `_main` calls the runtime's
+ //! `__wrap_main`, which sets the FPU up as on POSIX systems (exceptions masked: 9front's
+-//! kernel starts a process trapping on division by zero) and runs `.init_array`
+-//! (`crtbegin.o` registers the unwind tables there), then the program's `main`.
++//! kernel starts a process trapping on division by zero) and runs `.init_array`, then the
++//! program's `main`. A program that links C++ (Mesa's, in libvulkan.a) is linked by the
++//! driver for C++ (g++, clang++), which adds that library (libstdc++, libc++). So nothing
++//! here names one compiler's runtime.
+ 
+ use crate::spec::{
+     Cc, LinkerFlavor, Lld, Os, PanicStrategy, RelocModel, StackProbeType, TargetOptions,
+@@ -32,18 +35,21 @@ pub(crate) fn opts() -> TargetOptions {
+         // libc's `main` is a C function; a thread is a proc (rfork), its
+         // locals are kept by std (no TLS segment in Plan 9's executables)
+         has_thread_local: false,
+-        no_default_libraries: true,
++        // the driver's libraries: its runtime and APE (see above)
++        no_default_libraries: false,
+         // the entry is libc's _main (renamed)
+-        pre_link_args: TargetOptions::link_args(flavor, &["-Wl,--wrap=main", "-Wl,-e,__p9__main"]),
+-        // one group, they call each other: libc's _main libgcc's __wrap_main, libgcc (the
+-        // unwinder) APE's abort and memcpy, APE libc's privalloc
++        pre_link_args: TargetOptions::link_args(flavor, &["-Wl,-e,__p9__main"]),
++        // one group, they call each other: APE libc's privalloc; the driver's own
++        // libraries come after it (the runtime: __wrap_main, the unwinder, and again
++        // APE for what the runtime calls)
+         late_link_args: TargetOptions::link_args(
+             flavor,
+-            &["-Wl,--start-group", "-lp9", "-lbsd", "-lap", "-lgcc", "-Wl,--end-group"],
++            &["-Wl,--start-group", "-lp9", "-lbsd", "-lap", "-Wl,--end-group"],
+         ),
+-        // no dl_iterate_phdr: the unwinder finds the frames registered by crtbegin.o
++        // no dl_iterate_phdr: the driver's choice (gcc: crtbegin.o registers the
++        // frames; clang: --eh-frame-hdr and plan9.ld's __eh_frame_hdr_start)
+         eh_frame_header: false,
+-        // libgcc's DWARF unwinder, the tables registered by crtbegin.o
++        // the runtime's DWARF unwinder
+         panic_strategy: PanicStrategy::Unwind,
+         stack_probes: StackProbeType::Inline,
+         ..Default::default()
+diff --git a/compiler/rustc_target/src/spec/targets/aarch64_unknown_plan9.rs b/compiler/rustc_target/src/spec/targets/aarch64_unknown_plan9.rs
+index 7ec0e1721492d139f8f5fb6222f4308a18ece765..fb6ea0364aef5f97ea60cdda95da5684996ab6c4 100644
+--- a/compiler/rustc_target/src/spec/targets/aarch64_unknown_plan9.rs
++++ b/compiler/rustc_target/src/spec/targets/aarch64_unknown_plan9.rs
+@@ -21,7 +21,8 @@ pub(crate) fn target() -> Target {
+             features: "+v8a".into(),
+             max_atomic_width: Some(128),
+             stack_probes: StackProbeType::Inline,
+-            linker: Some("aarch64-pc-plan9-gcc".into()),
++            // the C++ driver: a program that links C++ (Mesa's) gets its library (base::plan9)
++            linker: Some("aarch64-pc-plan9-g++".into()),
+             ..base::plan9::opts()
+         },
+     }
+diff --git a/compiler/rustc_target/src/spec/targets/i686_unknown_plan9.rs b/compiler/rustc_target/src/spec/targets/i686_unknown_plan9.rs
+index a6769d4ff421408521366548f81f7a3ccabf93fc..c5c0b3b0a152d99a10b558c09f3b9359459ad941 100644
+--- a/compiler/rustc_target/src/spec/targets/i686_unknown_plan9.rs
++++ b/compiler/rustc_target/src/spec/targets/i686_unknown_plan9.rs
+@@ -22,7 +22,8 @@ pub(crate) fn target() -> Target {
+             // ABI is the same)
+             cpu: "pentium4".into(),
+             max_atomic_width: Some(64),
+-            linker: Some("i686-pc-plan9-gcc".into()),
++            // the C++ driver: a program that links C++ (Mesa's) gets its library (base::plan9)
++            linker: Some("i686-pc-plan9-g++".into()),
+             ..base::plan9::opts()
+         },
+     }
+diff --git a/compiler/rustc_target/src/spec/targets/riscv64gc_unknown_plan9.rs b/compiler/rustc_target/src/spec/targets/riscv64gc_unknown_plan9.rs
+index b110be626e5ff0a03b40d0b581cdb745122a9827..d4d8ac350b9fcdf69734eb51782d7dcd4cfa729c 100644
+--- a/compiler/rustc_target/src/spec/targets/riscv64gc_unknown_plan9.rs
++++ b/compiler/rustc_target/src/spec/targets/riscv64gc_unknown_plan9.rs
+@@ -24,7 +24,8 @@ pub(crate) fn target() -> Target {
+             features: "+m,+a,+f,+d,+c,+zicsr,+zifencei,-relax".into(),
+             llvm_abiname: LlvmAbi::Lp64d,
+             max_atomic_width: Some(64),
+-            linker: Some("riscv64-unknown-plan9-gcc".into()),
++            // the C++ driver: a program that links C++ (Mesa's) gets its library (base::plan9)
++            linker: Some("riscv64-unknown-plan9-g++".into()),
+             ..base::plan9::opts()
+         },
+     }
+diff --git a/compiler/rustc_target/src/spec/targets/x86_64_unknown_plan9.rs b/compiler/rustc_target/src/spec/targets/x86_64_unknown_plan9.rs
+index 40fcfdb7f266a7e70fd357075c5410063aa5fa58..f8e4d8224d2c9f9f71a4f3d8bdb3101e052e29a5 100644
+--- a/compiler/rustc_target/src/spec/targets/x86_64_unknown_plan9.rs
++++ b/compiler/rustc_target/src/spec/targets/x86_64_unknown_plan9.rs
+@@ -19,7 +19,8 @@ pub(crate) fn target() -> Target {
+             cpu: "x86-64".into(),
+             plt_by_default: false,
+             max_atomic_width: Some(64),
+-            linker: Some("x86_64-pc-plan9-gcc".into()),
++            // the C++ driver: a program that links C++ (Mesa's) gets its library (base::plan9)
++            linker: Some("x86_64-pc-plan9-g++".into()),
+             ..base::plan9::opts()
+         },
+     }
