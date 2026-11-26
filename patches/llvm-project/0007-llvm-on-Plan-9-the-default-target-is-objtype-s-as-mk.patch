@@ -1,0 +1,38 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stefan Hertenberger <erde74@gmail.com>
+Date: Thu, 26 Nov 2026 12:06:19 +0100
+Subject: [PATCH] llvm: on Plan 9 the default target is $objtype's (as mk, 6c
+ and 8c), the configured one without it: clang on 9front makes any machine's
+ programs
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ llvm/lib/TargetParser/Unix/Host.inc | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/llvm/lib/TargetParser/Unix/Host.inc b/llvm/lib/TargetParser/Unix/Host.inc
+index 38b942d053c1dc9aa3f831da8083d225001ffb10..25e089acf353e57016507f41cf5884cbf3bc216e 100644
+--- a/llvm/lib/TargetParser/Unix/Host.inc
++++ b/llvm/lib/TargetParser/Unix/Host.inc
+@@ -103,5 +103,21 @@ std::string sys::getDefaultTargetTriple() {
+     TargetTripleString = EnvTriple;
+ #endif
+ 
++#if defined(__plan9__)
++  // Plan 9: the compilers make code for $objtype (mk, 6c and 8c do so),
++  // the configured one if it is unset; the profile sets it to $cputype.
++  if (const char *O = std::getenv("objtype")) {
++    StringRef Obj(O);
++    if (Obj == "amd64")
++      TargetTripleString = "x86_64-unknown-plan9";
++    else if (Obj == "386")
++      TargetTripleString = "i686-unknown-plan9";
++    else if (Obj == "arm64")
++      TargetTripleString = "aarch64-unknown-plan9";
++    else
++      TargetTripleString = (Obj + "-unknown-plan9").str(); // riscv64, ...
++  }
++#endif
++
+   return TargetTripleString;
+ }

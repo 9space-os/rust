@@ -834,3 +834,10 @@ an unknown OS, 386's stack alignment stays 4 (16 only for Linux, Darwin,
 kFreeBSD, 64 bit), and the cross rustc on Linux uses Rust's CI LLVM. Open:
 rebuild Rust's LLVM (`scripts/build-llvm.sh`) and the native rustc from the
 series and run tests/run.sh, rustc.sh to confirm.
+
+0005 (getMainExecutable by rc's `$path`) and 0006 (libc++abi's
+`__cxa_thread_atexit`) are the native clang's. 0007: on Plan 9,
+`sys::getDefaultTargetTriple` follows `$objtype` (amd64, 386, arm64; another
+name as `<objtype>-unknown-plan9`), so a 9front clang makes the programs of
+the machine mk is building for. Without effect for rustc: it gives LLVM the
+target triple itself.
