@@ -1,0 +1,48 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stefan Hertenberger <erde74@gmail.com>
+Date: Thu, 26 Nov 2026 08:32:35 +0100
+Subject: [PATCH] llvm: 9front (Plan 9): getMainExecutable looks a bare argv[0]
+ up in rc's $path (APE's "path", elements by \001): clang re-execs itself and
+ finds ld.lld beside it
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ llvm/lib/Support/Unix/Path.inc | 23 +++++++++++++++++++++--
+ 1 file changed, 21 insertions(+), 2 deletions(-)
+
+diff --git a/llvm/lib/Support/Unix/Path.inc b/llvm/lib/Support/Unix/Path.inc
+index f69022f91cc78ce01154c573a9191c573483b5dc..cde8ec36b48fcaed12c77abedbf32e32219e94a4 100644
+--- a/llvm/lib/Support/Unix/Path.inc
++++ b/llvm/lib/Support/Unix/Path.inc
+@@ -327,10 +327,29 @@ std::string getMainExecutable(const char *argv0, void *MainAddr) {
+     break; // Found entry, but realpath failed.
+   }
+ #elif defined(__plan9__)
+-  // 9front (Plan 9) keeps no name of the program a proc runs: argv[0].
++  // 9front (Plan 9) keeps no name of the program a proc runs: argv[0],
++  // looked up as rc does when it has no '/' (rc's $path, which APE gives as
++  // "path" with its elements separated by \001).
+   (void)MainAddr;
+   char exe_path[PATH_MAX];
+-  if (argv0 && realpath(argv0, exe_path))
++  if (!argv0)
++    return "";
++  if (!strchr(argv0, '/')) {
++    if (const char *path = getenv("path")) {
++      std::string dirs(path);
++      size_t b = 0;
++      while (b <= dirs.size()) {
++        size_t e = dirs.find('\001', b);
++        if (e == std::string::npos)
++          e = dirs.size();
++        std::string cand = dirs.substr(b, e - b) + "/" + argv0;
++        if (::access(cand.c_str(), X_OK) == 0 && realpath(cand.c_str(), exe_path))
++          return exe_path;
++        b = e + 1;
++      }
++    }
++  }
++  if (realpath(argv0, exe_path))
+     return exe_path;
+ #elif defined(HAVE_DLOPEN)
+   // Use dladdr to get executable path if available.
