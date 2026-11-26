@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stefan Hertenberger <erde74@gmail.com>
+Date: Thu, 26 Nov 2026 17:03:46 +0100
+Subject: [PATCH] clang, Plan 9: libunwind in every link (as gcc's libgcc
+ carries its unwinder): Rust's std and C with -fexceptions unwind with a C
+ driver too
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ clang/lib/Driver/ToolChains/Plan9.cpp | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/clang/lib/Driver/ToolChains/Plan9.cpp b/clang/lib/Driver/ToolChains/Plan9.cpp
+index 7be2807d72ad8e057e2719536fe7909f1beddaa8..207b49e1ae1db4ef5baf593b97125f3dd1d7dcc5 100644
+--- a/clang/lib/Driver/ToolChains/Plan9.cpp
++++ b/clang/lib/Driver/ToolChains/Plan9.cpp
+@@ -184,8 +184,11 @@ void tools::plan9::Linker::ConstructJob(Compilation &C, const JobAction &JA,
+     // Silence warnings when linking C code with a C++ '-stdlib' argument.
+     Args.ClaimAllArgs(options::OPT_stdlib_EQ);
+     CmdArgs.push_back("--start-group");
+-    // compiler-rt's builtins and, for C++, libunwind.
++    // compiler-rt's builtins, and libunwind for every program (as gcc's
++    // libgcc has its unwinder: Rust's std, C with -fexceptions; from the
++    // archive only what is called)
+     AddRunTimeLibs(TC, D, CmdArgs, Args);
++    CmdArgs.push_back("-lunwind");
+     CmdArgs.push_back("-lbsd");
+     CmdArgs.push_back("-lap");
+     CmdArgs.push_back("--end-group");
