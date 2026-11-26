@@ -1,0 +1,25 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stefan Hertenberger <erde74@gmail.com>
+Date: Fri, 27 Nov 2026 00:26:35 +0100
+Subject: [PATCH] clang, Plan 9: -no-pie accepted without a warning (static
+ programs; rustc passes it)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ clang/lib/Driver/ToolChains/Plan9.cpp | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/clang/lib/Driver/ToolChains/Plan9.cpp b/clang/lib/Driver/ToolChains/Plan9.cpp
+index 207b49e1ae1db4ef5baf593b97125f3dd1d7dcc5..b5e2830ab5ef6e22b1edfa32ea8a2e802954ee41 100644
+--- a/clang/lib/Driver/ToolChains/Plan9.cpp
++++ b/clang/lib/Driver/ToolChains/Plan9.cpp
+@@ -201,6 +201,9 @@ void tools::plan9::Linker::ConstructJob(Compilation &C, const JobAction &JA,
+     CmdArgs.push_back(Args.MakeArgString(
+         TC.getCompilerRT(Args, "crtend", ToolChain::FT_Object)));
+ 
++  // Programs are static, without PIE: -no-pie (rustc passes it) says so
++  Args.ClaimAllArgs(options::OPT_no_pie);
++
+   const char *Exec = Args.MakeArgString(TC.GetLinkerPath());
+   C.addCommand(std::make_unique<Command>(JA, *this,
+                                          ResponseFileSupport::AtFileCurCP(),
