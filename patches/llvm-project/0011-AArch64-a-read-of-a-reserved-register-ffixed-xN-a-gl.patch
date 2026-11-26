@@ -1,0 +1,80 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stefan Hertenberger <erde74@gmail.com>
+Date: Fri, 27 Nov 2026 00:34:56 +0100
+Subject: [PATCH] AArch64: a read of a reserved register (-ffixed-xN, a global
+ register variable) by CopyFromReg, not the READ_REGISTER pseudo: the pseudo
+ named its register only as an immediate, and the schedulers moved a later
+ write above it (9front's arm64 kernel: up = nil before up->mach = nil, a
+ store to 0)
+
+Found by the build-9space-on-itself session (gdb on the clang-built arm64 kernel).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../Target/AArch64/AArch64ISelDAGToDAG.cpp    |  7 ++++
+ .../AArch64/read-register-reserved-order.ll   | 38 +++++++++++++++++++
+ 2 files changed, 45 insertions(+)
+ create mode 100644 src/llvm-project/llvm/test/CodeGen/AArch64/read-register-reserved-order.ll
+
+diff --git a/llvm/lib/Target/AArch64/AArch64ISelDAGToDAG.cpp b/llvm/lib/Target/AArch64/AArch64ISelDAGToDAG.cpp
+index 3f23e34d54c55fad9397eb7e3aecbf11aa84b08b..ef242c9a3d898bde0d05dd41f83ae1648bee62d3 100644
+--- a/llvm/lib/Target/AArch64/AArch64ISelDAGToDAG.cpp
++++ b/llvm/lib/Target/AArch64/AArch64ISelDAGToDAG.cpp
+@@ -4369,6 +4369,13 @@ bool AArch64DAGToDAGISel::tryReadRegister(SDNode *N) {
+         // rejects); the AsmPrinter materializes the real mov/fmov.
+         Register PReg = Subtarget->getTargetLowering()->matchRegisterName(
+             RegString->getString());
++        // A reserved register (-ffixed-xN: a global register variable) goes
++        // the generic way, a CopyFromReg: the pseudo names its register only
++        // as an immediate, so the schedulers saw no dependency on a later
++        // write of it and moved that write above the read.
++        if (PReg && Subtarget->getRegisterInfo()->isReservedReg(
++                        CurDAG->getMachineFunction(), PReg))
++          return false;
+         unsigned PseudoOp = 0;
+         if (AArch64::GPR64RegClass.contains(PReg))
+           PseudoOp = AArch64::READ_REGISTER_GPR64;
+diff --git a/llvm/test/CodeGen/AArch64/read-register-reserved-order.ll b/llvm/test/CodeGen/AArch64/read-register-reserved-order.ll
+new file mode 100644
+index 0000000000000000000000000000000000000000..8673e82744437d3c83d91edac10ef856860cb040
+--- /dev/null
++++ b/llvm/test/CodeGen/AArch64/read-register-reserved-order.ll
+@@ -0,0 +1,38 @@
++; RUN: llc -mtriple=aarch64-none-elf -mattr=+reserve-x26 -O2 < %s | FileCheck %s
++;
++; A read of a reserved register (a global register variable, -ffixed-x26)
++; must stay before a later write of it: the stores through the value read
++; come before x26 = 0 (Plan 9's kernel: up->mach = nil, then up = nil).
++
++@pa = global { ptr, ptr } zeroinitializer
++
++; CHECK-LABEL: f:
++; CHECK:     str wzr, [x26]
++; CHECK:     x26
++; CHECK:     mov x26, xzr
++define void @f() {
++entry:
++  %0 = tail call i64 @llvm.read_register.i64(metadata !0)
++  %1 = inttoptr i64 %0 to ptr
++  store i32 0, ptr %1, align 8
++  %2 = tail call i64 @llvm.read_register.i64(metadata !0)
++  %3 = inttoptr i64 %2 to ptr
++  %mach = getelementptr inbounds i8, ptr %3, i64 8
++  store ptr null, ptr %mach, align 8
++  %4 = load ptr, ptr @pa, align 8
++  %5 = tail call i64 @llvm.read_register.i64(metadata !0)
++  %6 = inttoptr i64 %5 to ptr
++  %qnext = getelementptr inbounds i8, ptr %6, i64 16
++  store ptr %4, ptr %qnext, align 8
++  %7 = tail call i64 @llvm.read_register.i64(metadata !0)
++  %8 = inttoptr i64 %7 to ptr
++  store ptr %8, ptr @pa, align 8
++  tail call void @llvm.write_register.i64(metadata !0, i64 0)
++  ret void
++}
++
++declare i64 @llvm.read_register.i64(metadata)
++declare void @llvm.write_register.i64(metadata, i64)
++
++!llvm.named.register.x26 = !{!0}
++!0 = !{!"x26"}
