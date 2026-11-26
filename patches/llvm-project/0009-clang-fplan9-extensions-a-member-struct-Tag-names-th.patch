@@ -1,0 +1,50 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stefan Hertenberger <erde74@gmail.com>
+Date: Thu, 26 Nov 2026 23:25:57 +0100
+Subject: [PATCH] clang, -fplan9-extensions: a member "struct Tag;" names the
+ visible Tag (an unnamed member of its type), also in a record at block scope
+ (9front's 386/vlrt.c)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ clang/lib/Parse/ParseDeclCXX.cpp   | 8 ++++++++
+ clang/test/Sema/plan9-extensions.c | 9 +++++++++
+ 2 files changed, 17 insertions(+)
+
+diff --git a/clang/lib/Parse/ParseDeclCXX.cpp b/clang/lib/Parse/ParseDeclCXX.cpp
+index d7a9c72eb2da8c945c9d5e0246173b8a7b6f8e2b..4546a2c4b38930f6a39d7c661164d466c75a485a 100644
+--- a/clang/lib/Parse/ParseDeclCXX.cpp
++++ b/clang/lib/Parse/ParseDeclCXX.cpp
+@@ -1924,6 +1924,14 @@ void Parser::ParseClassSpecifier(tok::TokenKind TagTokKind,
+              (Tok.is(tok::semi) ||
+               (Tok.isAtStartOfLine() && !isValidAfterTypeSpecifier(false)))) {
+     TUK = DS.isFriendSpecified() ? TagUseKind::Friend : TagUseKind::Declaration;
++    // Plan 9 C: a member "struct Tag;" names the visible struct Tag (an
++    // unnamed member of its type), as kencc and gcc's -fplan9-extensions
++    // take it; also in a record at block scope, where a declaration would
++    // make a new, incomplete Tag (9front's 386/vlrt.c: union { double d;
++    // struct Vlong; } in a function)
++    if (getLangOpts().Plan9Ext && !getLangOpts().CPlusPlus &&
++        Tok.is(tok::semi) && getCurScope()->isClassScope())
++      TUK = TagUseKind::Reference;
+     if (Tok.isNot(tok::semi)) {
+       const PrintingPolicy &PPol = Actions.getASTContext().getPrintingPolicy();
+       // A semicolon was missing after this declaration. Diagnose and recover.
+diff --git a/clang/test/Sema/plan9-extensions.c b/clang/test/Sema/plan9-extensions.c
+index ca15cb441795998937a18d1903dac8309460729e..70b1b9be6260098e1fcca92ca6250954d42d9a30 100644
+--- a/clang/test/Sema/plan9-extensions.c
++++ b/clang/test/Sema/plan9-extensions.c
+@@ -54,4 +54,13 @@ void f(Proc *p, struct Both *b) {
+ }
+ 
+ Rendez *g(Proc *p) { return p; }
++
++// "struct Tag;" in a record at block scope names the visible Tag (9front's
++// 386/vlrt.c), not a new one
++struct Vlong { unsigned long lo, hi; };
++unsigned long hi(double d) {
++  union { double d; struct Vlong; } x;
++  x.d = d;
++  return x.hi + x.Vlong.lo;
++}
+ #endif
