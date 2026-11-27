@@ -1,0 +1,146 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stefan Hertenberger <erde74@gmail.com>
+Date: Fri, 27 Nov 2026 03:40:36 +0100
+Subject: [PATCH] clang, Plan 9: riscv64 (Plan9TargetInfo for RISCV64; as the
+ tree's riscv64/cflags.json and 9space's gcc: code model medany, char signed,
+ no linker relaxation: nothing sets gp for a program and jc's code uses it as
+ its static base); Driver/plan9.c tests the defines and the link line
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ clang/lib/Basic/Targets.cpp                |  3 ++
+ clang/lib/Driver/ToolChains/Arch/RISCV.cpp |  7 +++--
+ clang/lib/Driver/ToolChains/Clang.cpp      | 11 ++++---
+ clang/lib/Driver/ToolChains/Plan9.cpp      |  9 ++++++
+ clang/test/Driver/plan9.c                  | 36 ++++++++++++++++++++++
+ 5 files changed, 60 insertions(+), 6 deletions(-)
+ create mode 100644 src/llvm-project/clang/test/Driver/plan9.c
+
+diff --git a/clang/lib/Basic/Targets.cpp b/clang/lib/Basic/Targets.cpp
+index 29f017738f89366a30064780df3669a5c4ac5008..a556e5b721baf4220aa60acfc1460cb26b3d9a86 100644
+--- a/clang/lib/Basic/Targets.cpp
++++ b/clang/lib/Basic/Targets.cpp
+@@ -491,6 +491,9 @@ std::unique_ptr<TargetInfo> AllocateTarget(const llvm::Triple &Triple,
+                                                                      Opts);
+     case llvm::Triple::Hurd:
+       return std::make_unique<HurdTargetInfo<RISCV64TargetInfo>>(Triple, Opts);
++    case llvm::Triple::Plan9:
++      return std::make_unique<Plan9TargetInfo<RISCV64TargetInfo>>(Triple,
++                                                                   Opts);
+ 
+     case llvm::Triple::Serenity:
+       return std::make_unique<SerenityTargetInfo<RISCV64TargetInfo>>(Triple,
+diff --git a/clang/lib/Driver/ToolChains/Arch/RISCV.cpp b/clang/lib/Driver/ToolChains/Arch/RISCV.cpp
+index c90d771e87a2339576740309c6ac02c65495f031..f4320301da157a3a40de1555c3d0d34fc8d5ceae 100644
+--- a/clang/lib/Driver/ToolChains/Arch/RISCV.cpp
++++ b/clang/lib/Driver/ToolChains/Arch/RISCV.cpp
+@@ -130,8 +130,11 @@ void riscv::getRISCVTargetFeatures(const Driver &D, const llvm::Triple &Triple,
+   RESERVE_REG(x31)
+ #undef RESERVE_REG
+ 
+-  // -mrelax is default, unless -mno-relax is specified.
+-  if (Args.hasFlag(options::OPT_mrelax, options::OPT_mno_relax, true))
++  // -mrelax is default, unless -mno-relax is specified.  Not on Plan 9:
++  // nothing sets gp for a program (and the tree's jc code uses it as its
++  // static base), gp-relative accesses are out.
++  if (Args.hasFlag(options::OPT_mrelax, options::OPT_mno_relax,
++                   !Triple.isOSPlan9()))
+     Features.push_back("+relax");
+   else
+     Features.push_back("-relax");
+diff --git a/clang/lib/Driver/ToolChains/Clang.cpp b/clang/lib/Driver/ToolChains/Clang.cpp
+index 2a9867f1d9d4380a0e30366fbcdba1a961c5e6fb..88d3246615f96d9bc7d86749583da04b9f40d20e 100644
+--- a/clang/lib/Driver/ToolChains/Clang.cpp
++++ b/clang/lib/Driver/ToolChains/Clang.cpp
+@@ -1231,15 +1231,18 @@ static bool isSignedCharDefault(const llvm::Triple &Triple) {
+       return true;
+     return false;
+ 
++  case llvm::Triple::riscv32:
++  case llvm::Triple::riscv64:
++  case llvm::Triple::riscv32be:
++  case llvm::Triple::riscv64be:
++    // Plan 9: char is signed on every machine (jc, 9space's gcc).
++    return Triple.isOSPlan9();
++
+   case llvm::Triple::csky:
+   case llvm::Triple::hexagon:
+   case llvm::Triple::msp430:
+   case llvm::Triple::ppcle:
+   case llvm::Triple::ppc64le:
+-  case llvm::Triple::riscv32:
+-  case llvm::Triple::riscv64:
+-  case llvm::Triple::riscv32be:
+-  case llvm::Triple::riscv64be:
+   case llvm::Triple::systemz:
+   case llvm::Triple::xcore:
+   case llvm::Triple::xtensa:
+diff --git a/clang/lib/Driver/ToolChains/Plan9.cpp b/clang/lib/Driver/ToolChains/Plan9.cpp
+index b5e2830ab5ef6e22b1edfa32ea8a2e802954ee41..f59335f10af929423409a89da97cfd85d7441e48 100644
+--- a/clang/lib/Driver/ToolChains/Plan9.cpp
++++ b/clang/lib/Driver/ToolChains/Plan9.cpp
+@@ -92,6 +92,10 @@ void Plan9::addClangTargetOptions(const ArgList &DriverArgs,
+     CC1Args.push_back("-D_POSIX_SOURCE=");
+     CC1Args.push_back("-D_LIMITS_EXTENSION=");
+   }
++  // riscv64: the code model of the tree (riscv64/cflags.json) and of
++  // 9space's gcc, medany, so objects of both link together.
++  if (getTriple().isRISCV() && !DriverArgs.hasArg(options::OPT_mcmodel_EQ))
++    CC1Args.push_back("-mcmodel=medium");
+ }
+ 
+ void Plan9::AddClangCXXStdlibIncludeArgs(const ArgList &DriverArgs,
+@@ -150,6 +154,11 @@ void tools::plan9::Linker::ConstructJob(Compilation &C, const JobAction &JA,
+     // The unwind tables' index (.eh_frame_hdr): libunwind finds it by
+     // plan9.ld's __eh_frame_hdr_start.
+     CmdArgs.push_back("--eh-frame-hdr");
++    // riscv64: no relaxation (no gp; Arch/RISCV.cpp), also for assembly
++    // that has relaxable relocations; an explicit -mrelax wins.
++    if (TC.getTriple().isRISCV() &&
++        !Args.hasFlag(options::OPT_mrelax, options::OPT_mno_relax, false))
++      CmdArgs.push_back("--no-relax");
+     if (!Args.hasArg(options::OPT_T)) {
+       CmdArgs.push_back("-T");
+       CmdArgs.push_back(Args.MakeArgString(TC.root() + "/" + O + "/plan9.ld"));
+diff --git a/clang/test/Driver/plan9.c b/clang/test/Driver/plan9.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..1aeed339e7adca6a2e62a30406d8e37c85eb684a
+--- /dev/null
++++ b/clang/test/Driver/plan9.c
+@@ -0,0 +1,36 @@
++// The Plan 9 (9front, APE) toolchain: the compiler's defines and the link
++// line, for every machine, and riscv64's code model, relaxation and char.
++
++// RUN: %clang -### --target=x86_64-unknown-plan9 --sysroot=/p9root %s 2>&1 \
++// RUN:   | FileCheck --check-prefixes=COMMON,AMD64 %s
++// RUN: %clang -### --target=riscv64-unknown-plan9 --sysroot=/p9root %s 2>&1 \
++// RUN:   | FileCheck --check-prefixes=COMMON,RISCV64 %s
++// COMMON: "-cc1"
++// COMMON-SAME: "-D_POSIX_SOURCE="
++// COMMON-SAME: "-D_LIMITS_EXTENSION="
++// RISCV64-SAME: "-mcmodel=medium"
++// RISCV64-SAME: "-target-feature" "-relax"
++// RISCV64-NOT: "-fno-signed-char"
++// COMMON: ld.lld"
++// COMMON-SAME: "-static"
++// COMMON-SAME: "--eh-frame-hdr"
++// AMD64-NOT: "--no-relax"
++// RISCV64-SAME: "--no-relax"
++// AMD64-SAME: "-T" "{{.*}}/amd64/plan9.ld" "--wrap=main"
++// RISCV64-SAME: "-T" "{{.*}}/riscv64/plan9.ld" "--wrap=main"
++// COMMON-SAME: "--start-group" "{{.*}}libclang_rt.builtins.a" "-lunwind"
++// COMMON-SAME: "-lap"
++
++// The code model and relaxation as given win.
++// RUN: %clang -### --target=riscv64-unknown-plan9 --sysroot=/p9root \
++// RUN:   -mcmodel=medlow -mrelax %s 2>&1 | FileCheck --check-prefix=EXPLICIT %s
++// EXPLICIT: "-cc1"
++// EXPLICIT-NOT: "-mcmodel=medium"
++// EXPLICIT: "-target-feature" "+relax"
++// EXPLICIT: ld.lld"
++// EXPLICIT-NOT: "--no-relax"
++
++// char is signed on riscv64 for Plan 9 (as jc and 9space's gcc), not on Linux.
++// RUN: %clang -### --target=riscv64-unknown-linux-gnu -c %s 2>&1 \
++// RUN:   | FileCheck --check-prefix=LINUX-CHAR %s
++// LINUX-CHAR: "-fno-signed-char"
