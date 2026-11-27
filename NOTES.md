@@ -754,8 +754,8 @@ the bucket locks; `end_program`'s `__ape_exit` runs before it locks).
 `tests/exitrace.rs` (tests/run.sh, 500 runs): 4 threads allocating, one starting short
 detached threads every 200 µs, main `process::exit` after 1-8 ms; FAIL when procs of it
 are left. Before (std of 2026-11-17): "exitrace FAIL 101 procs left"; after: ok, amd64
-twice, 386 once; tests/run.sh 14/14. arm64 not run (the std tests never ran there:
-dist/docs/open.md).
+twice, 386 once; tests/run.sh 14/14. arm64: ok since 2026-11-27 (tests/run.sh 15/15,
+with the longer CMDWAIT of the emulated machines).
 
 ## eprintln!'s line in one write (2026-11-21)
 
@@ -831,9 +831,14 @@ its NOTES.md is the log. For rustc: `x86_64-unknown-plan9` & co. now parse as
 OS `plan9`, not unknown. Expected without effect: rustc sets emulated TLS
 itself (`Options.EmulatedTLS`), the X86 and AArch64 backends key nothing on
 an unknown OS, 386's stack alignment stays 4 (16 only for Linux, Darwin,
-kFreeBSD, 64 bit), and the cross rustc on Linux uses Rust's CI LLVM. Open:
-rebuild Rust's LLVM (`scripts/build-llvm.sh`) and the native rustc from the
-series and run tests/run.sh, rustc.sh to confirm.
+kFreeBSD, 64 bit), and the cross rustc on Linux uses Rust's CI LLVM.
+Confirmed (2026-11-27): Rust's LLVM rebuilt from the series
+(`scripts/build-llvm.sh`) for amd64, 386 and arm64, the native rustc, rustdoc,
+rustfmt, clippy and cargo built and installed against it (build-toolchains'
+steps rustc-A .. install-A); tests/run.sh 15/15 and rustc.sh 3/3 in the guest on
+each of the three. arm64's run is the first with exitrace and eprintline there
+(both ok; run.sh now gives the emulated machines `CMDWAIT=900`: exitrace's 500
+runs took longer than boot-cli's 60 s a line).
 
 0005 (getMainExecutable by rc's `$path`) and 0006 (libc++abi's
 `__cxa_thread_atexit`) are the native clang's. 0007: on Plan 9,

@@ -24,6 +24,9 @@ riscv64)	T=riscv64gc-unknown-plan9 X=riscv64-unknown-plan9 LOG=guest-tests.riscv
 *)	echo "run.sh: objtype=$objtype: no target" >&2; exit 1 ;;
 esac
 export objtype
+# boot-cli waits CMDWAIT s for rc's prompt after each line (default 60): exitrace's 500
+# runs take longer on the emulated machines (arm64 ~5 min)
+case $objtype in arm64|riscv64) export CMDWAIT=${CMDWAIT:-900} GUEST_TIMEOUT=${GUEST_TIMEOUT:-2400} ;; esac
 export PATH=$GCC9BUILD/$objtype/cross/bin:$PATH
 R=$TOP/rust/build/host/stage1/bin/rustc
 O=$TOP/tests/out/$objtype
