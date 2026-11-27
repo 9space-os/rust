@@ -1,0 +1,301 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stefan Hertenberger <erde74@gmail.com>
+Date: Fri, 27 Nov 2026 14:31:26 +0100
+Subject: [PATCH] plan9: clones close on exec, no fork while a descriptor does
+ not yet, error kinds without the file name, sleep after a note, Killed, a
+ pump's errors kept
+
+From 9space's stage 3 review:
+- try_clone_to_owned (every try_clone, FileDesc::duplicate, the pump's
+  copy) was dup(2), which 9front makes without OCEXEC: a cloned socket
+  or pipe stayed open in every child spawned later (its peer never saw
+  it close, a reader no end of file). It opens #d/n with OCEXEC, in the
+  descriptor's mode.
+- listen and accept opened their files without OCEXEC until socket_of
+  reopened them: they open them close-on-exec at once now (libc's listen
+  and accept, done here). pipe(2) has no such flag: its two reopenings
+  hold NOCEXEC to read, spawn's rfork to write, so no child of another
+  thread gets an end (spawn's exec-error pipe: that spawn waited for the
+  other child).
+- error_kind matched the whole errstr, whose end is the file name
+  namec adds (": 'name'"): a path with "interrupted" in it was
+  Interrupted, and the callers that retry on it looped.
+- thread::sleep ignored sleep(2)'s -1: a note the program carries on
+  after ended it early; the rest is slept to the deadline.
+- ExitStatus::code: the kernel's "Killed" was Some(1); the notes match
+  without case (None, as Unix's for a signal).
+- A pump's reader or writer error was taken by the first call after it:
+  the next read or accept waited for ever (or WouldBlock for ever, mio
+  stalled), writes went to no writer. It stays, for every call.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ library/std/src/os/fd/owned.rs                | 22 ++++++++++++---
+ library/std/src/sys/fd/plan9.rs               |  6 ++++
+ library/std/src/sys/net/connection/plan9.rs   | 28 ++++++++++---------
+ .../std/src/sys/net/connection/plan9/pump.rs  | 22 ++++++++++-----
+ library/std/src/sys/pal/plan9/mod.rs          |  4 +++
+ library/std/src/sys/pipe/plan9.rs             |  2 ++
+ library/std/src/sys/process/plan9.rs          | 10 +++++--
+ library/std/src/sys/thread/plan9.rs           | 16 +++++++++--
+ 8 files changed, 82 insertions(+), 28 deletions(-)
+
+diff --git a/library/std/src/os/fd/owned.rs b/library/std/src/os/fd/owned.rs
+index 1124be4d370a1e0b1b012393390f75f3911b7f4a..9146120b90189014a87c1958f7d79ebe3d23a994 100644
+--- a/library/std/src/os/fd/owned.rs
++++ b/library/std/src/os/fd/owned.rs
+@@ -18,7 +18,8 @@ use crate::mem::ManuallyDrop;
+     target_env = "sgx",
+     target_os = "hermit",
+     target_os = "trusty",
+-    target_os = "motor"
++    target_os = "motor",
++    target_os = "plan9"
+ )))]
+ use crate::sys::cvt;
+ #[cfg(not(target_os = "trusty"))]
+@@ -169,12 +170,25 @@ impl BorrowedFd<'_> {
+     /// Creates a new `OwnedFd` instance that shares the same underlying file
+     /// description as the existing `BorrowedFd` instance.
+     /// Creates a new `OwnedFd` instance that shares the same underlying file
+-    /// description as the existing `BorrowedFd` instance: dup(2), the lowest free one.
++    /// description as the existing `BorrowedFd` instance: an open of dup(3)'s
++    /// `#d/n` with OCEXEC, the lowest free one, closed on exec as std's other
++    /// descriptors are (dup(2) gives one that is not: every clone, a socket's,
++    /// a pipe's, stayed open in every child spawned later, and its peer never
++    /// saw it close). In the mode the descriptor has: read and write, read,
++    /// or write, what `#d` allows.
+     #[cfg(target_os = "plan9")]
+     #[stable(feature = "io_safety", since = "1.63.0")]
+     pub fn try_clone_to_owned(&self) -> io::Result<OwnedFd> {
+-        let fd = cvt(unsafe { libc::dup(self.as_raw_fd(), -1) })?;
+-        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
++        let path = crate::ffi::CString::new(format!("#d/{}", self.as_raw_fd())).unwrap();
++        let mut last = None;
++        for mode in [libc::ORDWR, libc::OREAD, libc::OWRITE] {
++            let fd = unsafe { libc::open(path.as_ptr(), mode | libc::OCEXEC) };
++            if fd >= 0 {
++                return Ok(unsafe { OwnedFd::from_raw_fd(fd) });
++            }
++            last = Some(crate::sys::last_error());
++        }
++        Err(last.unwrap())
+     }
+ 
+     #[cfg(target_os = "motor")]
+diff --git a/library/std/src/sys/fd/plan9.rs b/library/std/src/sys/fd/plan9.rs
+index c5f86ca7e9b2791867a7e16042c63c65a40219e4..37b8019641b3bcfb3d6a170fc6dc88079e9402d3 100644
+--- a/library/std/src/sys/fd/plan9.rs
++++ b/library/std/src/sys/fd/plan9.rs
+@@ -52,6 +52,12 @@ pub fn forget_state(fd: RawFd) {
+     crate::sys::net::pump_forget(fd);
+ }
+ 
++/// Taken to read while a descriptor exists without OCEXEC, from its making to
++/// `cloexec` (pipe(2) has no such flag), and to write around spawn's rfork: a
++/// child of another thread got one of them (spawn's own exec-error pipe: that
++/// spawn waited until the other child ended, `output` saw no end of file).
++pub static NOCEXEC: crate::sync::RwLock<()> = crate::sync::RwLock::new(());
++
+ /// A copy of `fd` that closes on exec (an open of dup(3)'s `#d/n` with OCEXEC; pipe(2) and
+ /// dial(2) give none), in place of it.
+ pub fn cloexec(fd: RawFd, mode: i32) -> io::Result<RawFd> {
+diff --git a/library/std/src/sys/net/connection/plan9.rs b/library/std/src/sys/net/connection/plan9.rs
+index 833f9c9fadfc8e3fcd3a7534844ede1713e1ff8a..45be11e67fa17e82e55ff6ad77b4df5c6be43877 100644
+--- a/library/std/src/sys/net/connection/plan9.rs
++++ b/library/std/src/sys/net/connection/plan9.rs
+@@ -18,7 +18,7 @@ use crate::net::{
+     Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs,
+ };
+ use crate::os::plan9::io::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, RawFd};
+-use crate::sys::fd::{FdState, FileDesc, cloexec, set_state, state};
++use crate::sys::fd::{FdState, FileDesc, set_state, state};
+ use crate::sys::{AsInner, FromInner, IntoInner, cvt, unsupported};
+ use crate::time::Duration;
+ 
+@@ -157,12 +157,6 @@ pub struct Socket {
+     fd: FileDesc,
+ }
+ 
+-/// A descriptor of dial(2), announce or accept, made close-on-exec.
+-fn socket_of(fd: RawFd) -> io::Result<Socket> {
+-    let fd = cloexec(fd, libc::ORDWR)?;
+-    set_state(fd, FdState::default());
+-    Ok(Socket::new(unsafe { FileDesc::from_raw_fd(fd) }))
+-}
+ 
+ impl Socket {
+     /// The fd, as the other platforms' sockets have it (net's Debug tests).
+@@ -611,13 +605,21 @@ impl FromInner<Socket> for TcpStream {
+ 
+ /// The next call of the announcement in `dir` (listen(2), accept(2)); a note (alarm, a pump's
+ /// interrupt) ends it with Interrupted.
++///
++/// As libc's listen and accept, with each file opened close-on-exec at once: theirs
++/// were not until `socket_of` reopened them, and a child another thread spawned in
++/// between kept the call (its peer never saw it close).
+ fn accept_blocking(dir: &str) -> io::Result<(Socket, SocketAddr)> {
+-    let dir = CString::new(dir).unwrap();
+-    let mut newdir = [0u8; 40];
+-    let lcfd = cvt(unsafe { libc::listen(dir.as_ptr(), newdir.as_mut_ptr().cast()) })?;
+-    let lcfd = unsafe { FileDesc::from_raw_fd(lcfd) };
+-    let fd = cvt(unsafe { libc::accept(lcfd.as_raw_fd(), newdir.as_ptr().cast()) })?;
+-    let s = socket_of(fd)?;
++    // listen: its open waits for a call; it reads the call's conversation
++    let lcfd = open_conv(dir, "listen")?;
++    let mut b = [0u8; 32];
++    let n = lcfd.read(&mut b)?;
++    let num = crate::str::from_utf8(&b[..n]).map_err(|_| io::const_error!(io::ErrorKind::InvalidData, "listen: a bad conversation"))?.trim();
++    let parent = dir.rsplit_once('/').map_or("", |(p, _)| p);
++    let newdir = format!("{parent}/{num}");
++    // accept: the devices that need it; its answer does not count (libc's)
++    let _ = lcfd.write(format!("accept {num}").as_bytes());
++    let s = Socket::new(open_conv(&newdir, "data")?);
+     let peer = s.remote()?;
+     Ok((s, peer))
+ }
+diff --git a/library/std/src/sys/net/connection/plan9/pump.rs b/library/std/src/sys/net/connection/plan9/pump.rs
+index ffdb22319981809e17a2dabf6deab9349f23d3bb..5d9c3d19f833ea721b93005311f632296beea4fc 100644
+--- a/library/std/src/sys/net/connection/plan9/pump.rs
++++ b/library/std/src/sys/net/connection/plan9/pump.rs
+@@ -422,7 +422,7 @@ impl Pump {
+ 
+     pub(super) fn take_error(&self) -> Option<io::Error> {
+         let mut s = lock(&self.m);
+-        s.connect_err.take().or_else(|| s.write_err.take())
++        s.connect_err.take().or_else(|| s.write_err.as_ref().map(again))
+     }
+ 
+     /// Waits on the condition (a blocking socket), at most until `deadline`.
+@@ -474,8 +474,8 @@ impl Pump {
+             if s.read_eof {
+                 return Ok(0);
+             }
+-            if let Some(e) = s.read_err.take() {
+-                return Err(e);
++            if let Some(e) = &s.read_err {
++                return Err(again(e));
+             }
+             if let Some(e) = s.connect_err.take() {
+                 return Err(e);
+@@ -492,8 +492,8 @@ impl Pump {
+         let deadline = timeout.map(|t| Instant::now() + t);
+         let mut s = lock(&self.m);
+         loop {
+-            if let Some(e) = s.write_err.take() {
+-                return Err(e);
++            if let Some(e) = &s.write_err {
++                return Err(again(e));
+             }
+             if let Some(e) = s.connect_err.take() {
+                 return Err(e);
+@@ -533,8 +533,8 @@ impl Pump {
+                 self.cv.notify_all();
+                 return Ok(c);
+             }
+-            if let Some(e) = s.read_err.take() {
+-                return Err(e);
++            if let Some(e) = &s.read_err {
++                return Err(again(e));
+             }
+             if s.nonblocking {
+                 return Err(io::Error::from(io::ErrorKind::WouldBlock));
+@@ -579,3 +579,11 @@ pub(super) fn connecting(sock: &TcpStream, ctl: FileDesc, msg: String) -> io::Re
+         p.connected(r);
+     })
+ }
++
++/// The error a reader or the writer ended with, for each call after it: the
++/// proc is gone, so it stays (taken once, the next read or accept waited for
++/// ever, or said WouldBlock for ever and the readiness never turned readable:
++/// mio stalled; writes after the writer's were acknowledged with no writer)
++fn again(e: &io::Error) -> io::Error {
++    io::Error::new(e.kind(), e.to_string())
++}
+diff --git a/library/std/src/sys/pal/plan9/mod.rs b/library/std/src/sys/pal/plan9/mod.rs
+index a68a5530693a58ab3b645f09e89e10deca32f241..dde8d0ab74c7d40c43a498d34613dc8b4994ae3e 100644
+--- a/library/std/src/sys/pal/plan9/mod.rs
++++ b/library/std/src/sys/pal/plan9/mod.rs
+@@ -87,6 +87,10 @@ pub fn errstr() -> Vec<u8> {
+ /// servers' messages.
+ pub fn error_kind(s: &[u8]) -> io::ErrorKind {
+     use io::ErrorKind::*;
++    // the error, not the file name the kernel adds ("file does not exist:
++    // 'x/interrupted/y'", namec): a name with "interrupted" in it was Interrupted,
++    // and the callers that retry on it (read_to_end, write_all, cvt_r) looped
++    let s = s.windows(3).position(|w| w == b": '").map_or(s, |i| &s[..i]);
+     let has = |p: &str| s.windows(p.len()).any(|w| w.eq_ignore_ascii_case(p.as_bytes()));
+     if has("interrupted") {
+         Interrupted
+diff --git a/library/std/src/sys/pipe/plan9.rs b/library/std/src/sys/pipe/plan9.rs
+index eb28ea41f950fe0e3cfc1246bb7b6d2d540db04c..4aa3173818ed838ceb45ec380d7912dff4d4c1c6 100644
+--- a/library/std/src/sys/pipe/plan9.rs
++++ b/library/std/src/sys/pipe/plan9.rs
+@@ -9,6 +9,8 @@ pub type Pipe = FileDesc;
+ 
+ pub fn pipe() -> io::Result<(Pipe, Pipe)> {
+     let mut fds = [0; 2];
++    // no spawn's rfork until both ends close on exec
++    let _g = crate::sys::fd::NOCEXEC.read().unwrap_or_else(|e| e.into_inner());
+     cvt(unsafe { libc::pipe(fds.as_mut_ptr()) })?;
+     // close on exec, as every descriptor std makes
+     let r = crate::sys::fd::cloexec(fds[0], libc::ORDWR);
+diff --git a/library/std/src/sys/process/plan9.rs b/library/std/src/sys/process/plan9.rs
+index d2a8a82fe702091b53bf15393b12f967ba87743c..81768029a69f6265907dd9e552379b0e941f088f 100644
+--- a/library/std/src/sys/process/plan9.rs
++++ b/library/std/src/sys/process/plan9.rs
+@@ -243,7 +243,11 @@ impl Command {
+                 errw: errw.as_raw_fd(),
+             },
+         };
+-        let pid = unsafe { rfork_run(flags, &run) };
++        // no descriptor of another thread's that does not close on exec yet
++        let pid = {
++            let _g = crate::sys::fd::NOCEXEC.write().unwrap_or_else(|e| e.into_inner());
++            unsafe { rfork_run(flags, &run) }
++        };
+         if pid < 0 {
+             return Err(last_error());
+         }
+@@ -477,7 +481,9 @@ impl ExitStatus {
+             b"sys: ", b"hangup", b"interrupt", b"quit", b"alarm", b"abort", b"exit", b"die",
+             b"kill", b"term", b"usr1", b"usr2", b"virtual alarm", b"profiling alarm",
+         ];
+-        if NOTES.iter().any(|n| m.starts_with(n)) { None } else { Some(1) }
++        // case aside: the kernel's message for a process killed is "Killed"
++        // (its code was Some(1), Unix's for a signal is None)
++        if NOTES.iter().any(|n| m.len() >= n.len() && m[..n.len()].eq_ignore_ascii_case(n)) { None } else { Some(1) }
+     }
+ }
+ 
+diff --git a/library/std/src/sys/thread/plan9.rs b/library/std/src/sys/thread/plan9.rs
+index b6d5306501c216193b0ac8278987bb40647139f4..069f4a9598762c394e71548f79bae7613c7ba781 100644
+--- a/library/std/src/sys/thread/plan9.rs
++++ b/library/std/src/sys/thread/plan9.rs
+@@ -77,12 +77,24 @@ pub fn yield_now() {
+     unsafe { libc::sleep(0) };
+ }
+ 
+-/// sleep(2) counts milliseconds: rounded up, so it never ends early.
++/// sleep(2) counts milliseconds: rounded up, so it never ends early. A note
++/// the program carries on after (one it catches) ends sleep(2) with -1: the
++/// rest is slept then, to the deadline (it returned early).
+ pub fn sleep(dur: Duration) {
++    let end = crate::time::Instant::now().checked_add(dur);
+     let mut ms = dur.as_nanos().div_ceil(1_000_000);
+     while ms > 0 {
+         let n = ms.min(i32::MAX as u128);
+-        unsafe { libc::sleep(n as libc::c_long) };
++        if unsafe { libc::sleep(n as libc::c_long) } < 0 {
++            // interrupted: what is left of the whole
++            let Some(end) = end else { continue };
++            let now = crate::time::Instant::now();
++            if now >= end {
++                return;
++            }
++            ms = (end - now).as_nanos().div_ceil(1_000_000);
++            continue;
++        }
+         ms -= n;
+     }
+ }

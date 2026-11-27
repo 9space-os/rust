@@ -68,6 +68,19 @@ impl Fd {
     // an empty slice's pointer is dangling (0x1 for bytes), and Plan 9's kernel
     // checks the address even for no bytes ("bad address in syscall"): one of
     // its own then
+    /// read, again when a note interrupted it: the readers of mouse, kbd,
+    /// wctl and event block in theirs, and a note to the program's group (one
+    /// it catches: ctrl_c, note::catch) interrupts them all; they ended then
+    /// (the mouse's said Closed: the window closed with no input left)
+    pub fn readon(&self, buf: &mut [u8]) -> io::Result<usize> {
+        loop {
+            match self.read(buf) {
+                Err(e) if e.to_string().starts_with("interrupted") => continue,
+                r => return r,
+            }
+        }
+    }
+
     pub fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
         let mut none = [0u8; 1];
         let p = if buf.is_empty() { none.as_mut_ptr() } else { buf.as_mut_ptr() };

@@ -856,3 +856,5 @@ no longer link `stdc++` themselves (wgpu-hal 28's patch; the tree's wsys,
 cargo.sh with `$XCXX`). Built: stage 1, stage 2, cargo, out/ for amd64,
 386, arm64. tests/run.sh amd64 15/15 (unwind, cxxmain); the tree's Rust
 programs with gcc and with clang (tree-clang): gpu 203/203 each.
+
+- 2026-11-27, 9space stage 3 review: std (patch 0031): try_clone opens #d/n with OCEXEC (dup gave descriptors every later child kept), listen/accept open close-on-exec at once and pipe(2) holds NOCEXEC against spawn's rfork, error_kind ignores the file name after ": '", thread::sleep sleeps the rest after a note, "Killed" is a note (code None), a pump's reader/writer error stays. winit: the c message of a key whose k pressed it is not a second press (Enter, Backspace, arrows acted twice), Ctrl+letter's logical key is the letter. p9win: its readers read again after an interrupted read (a caught note ended them).

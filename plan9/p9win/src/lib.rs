@@ -92,7 +92,7 @@ fn readers(dir: &str, send: &Sender, rect: &Arc<Mutex<Option<String>>>) -> io::R
             let send = send.clone();
             std::thread::Builder::new().name("p9win event".into()).spawn(move || {
                 let mut b = [0u8; 4096];
-                while let Ok(n) = ev.read(&mut b) {
+                while let Ok(n) = ev.readon(&mut b) {
                     if n == 0 {
                         break;
                     }
@@ -108,7 +108,7 @@ fn readers(dir: &str, send: &Sender, rect: &Arc<Mutex<Option<String>>>) -> io::R
         std::thread::Builder::new().name("p9win kbd".into()).spawn(move || {
             // messages k, K, c and a UTF-8 string each, NUL after each
             let mut b = [0u8; 512];
-            while let Ok(n) = kbd.read(&mut b) {
+            while let Ok(n) = kbd.readon(&mut b) {
                 if n == 0 {
                     break;
                 }
@@ -132,7 +132,7 @@ fn readers(dir: &str, send: &Sender, rect: &Arc<Mutex<Option<String>>>) -> io::R
         let wdir = dir.to_string();
         std::thread::Builder::new().name("p9win wctl".into()).spawn(move || {
             let mut b = [0u8; 256];
-            while let Ok(n) = wctl.read(&mut b) {
+            while let Ok(n) = wctl.readon(&mut b) {
                 if n == 0 {
                     break;
                 }
@@ -176,7 +176,7 @@ impl Inputs {
                     let fd = mouse.lock().unwrap().clone();
                     // m x y buttons msec, 49 bytes a message; r: the window changed
                     let mut b = [0u8; 64];
-                    while let Ok(n) = fd.read(&mut b[..49]) {
+                    while let Ok(n) = fd.readon(&mut b[..49]) {
                         if n == 0 {
                             break;
                         }
