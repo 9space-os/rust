@@ -71,13 +71,19 @@ Rust for 9front (@target@), from 9space's Rust port (github.com/9space-os/rust; 
 	bind -b /@objtype@/rust/bin /bin
 	cargo new hello && cd hello && cargo run
 
+With clang (toolchain/clang, /@objtype@/clang) instead of gcc, name its clang++
+as the linker (the target's default linker is gcc's g++ driver):
+
+	bind -b /@objtype@/clang/bin /bin
+	cargo run --config 'target.@target@.linker="clang++"'
+
 bin/	rustc, cargo, and the tools that were built (rustdoc, rustfmt,
 	cargo-fmt, clippy-driver, cargo-clippy)
 lib/rustlib/@target@/lib	std and its crates
 
 rustc finds this tree from its own path (/@objtype@/rust). Programs link
 with 9space's gcc (github.com/9space-os/gcc) against /@objtype@/lib.gcc (libp9.a, APE) and
-/@objtype@/plan9.ld; std uses 9front's own libc (not APE). cargo reaches
+/@objtype@/plan9.ld (or 9space's clang++); std uses 9front's own libc (not APE). cargo reaches
 crates.io over https: it needs the CA roots in /sys/lib/tls/ca.pem
 (9front ships none). Proc macros run as programs (no dylibs on Plan 9).
 EOF
