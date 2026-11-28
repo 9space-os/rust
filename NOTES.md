@@ -840,6 +840,10 @@ each of the three. arm64's run is the first with exitrace and eprintline there
 (both ok; run.sh now gives the emulated machines `CMDWAIT=900`: exitrace's 500
 runs took longer than boot-cli's 60 s a line).
 
+0013: `#pragma varargck` as kencc checks it (clang's Parse and Sema,
+`SemaPlan9`; toolchain/clang NOTES.md part 9). Without effect for rustc:
+clang's front end only.
+
 0005 (getMainExecutable by rc's `$path`) and 0006 (libc++abi's
 `__cxa_thread_atexit`) are the native clang's. 0007: on Plan 9,
 `sys::getDefaultTargetTriple` follows `$objtype` (amd64, 386, arm64; another

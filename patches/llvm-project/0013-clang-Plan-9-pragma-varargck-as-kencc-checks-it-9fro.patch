@@ -1,0 +1,815 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stefan Hertenberger <erde74@gmail.com>
+Date: Sat, 28 Nov 2026 01:25:43 +0100
+Subject: [PATCH] clang, Plan 9: #pragma varargck as kencc checks it (9front's
+ sys/src/cmd/cc/dpchk.c): argpos, type and flag pragmas, each call of an
+ argpos function with a literal format checked conversion by conversion (l,
+ ll, z, '*', x and X as o, void conversions such as %r and %%, void * for any
+ pointer, an enum no wider than int as int); kencc's warnings in
+ -Wplan9-format (part of -Wformat); test/Sema/plan9-varargck.c
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ clang/include/clang/Basic/DiagnosticGroups.td |   4 +-
+ .../clang/Basic/DiagnosticParseKinds.td       |   2 +
+ .../clang/Basic/DiagnosticSemaKinds.td        |  13 +
+ clang/include/clang/Parse/Parser.h            |   1 +
+ clang/include/clang/Sema/Sema.h               |   7 +
+ clang/include/clang/Sema/SemaPlan9.h          |  98 ++++++
+ clang/lib/Parse/ParsePragma.cpp               | 122 ++++++++
+ clang/lib/Sema/CMakeLists.txt                 |   1 +
+ clang/lib/Sema/Sema.cpp                       |   2 +
+ clang/lib/Sema/SemaChecking.cpp               |   3 +
+ clang/lib/Sema/SemaPlan9.cpp                  | 290 ++++++++++++++++++
+ clang/test/Sema/plan9-varargck.c              |  63 ++++
+ 12 files changed, 605 insertions(+), 1 deletion(-)
+ create mode 100644 src/llvm-project/clang/include/clang/Sema/SemaPlan9.h
+ create mode 100644 src/llvm-project/clang/lib/Sema/SemaPlan9.cpp
+ create mode 100644 src/llvm-project/clang/test/Sema/plan9-varargck.c
+
+diff --git a/clang/include/clang/Basic/DiagnosticGroups.td b/clang/include/clang/Basic/DiagnosticGroups.td
+index b3c3b25aa4b2ec46f861920be84817ab2f899dda..cbe94fce86389fca90c5d998b9531d3431b6da8b 100644
+--- a/clang/include/clang/Basic/DiagnosticGroups.td
++++ b/clang/include/clang/Basic/DiagnosticGroups.td
+@@ -1392,10 +1392,12 @@ def FormatOverflow: DiagGroup<"format-overflow", [FormatOverflowNonKprintf]>;
+ def FormatTruncationNonKprintf: DiagGroup<"format-truncation-non-kprintf">;
+ def FormatTruncation: DiagGroup<"format-truncation", [FormatTruncationNonKprintf]>;
+ 
++def Plan9Format : DiagGroup<"plan9-format">;
+ def Format : DiagGroup<"format",
+                        [FormatExtraArgs, FormatZeroLength, NonNull,
+                         FormatSecurity, FormatY2K, FormatInvalidSpecifier,
+-                        FormatInsufficientArgs, FormatOverflow, FormatTruncation]>,
++                        FormatInsufficientArgs, FormatOverflow, FormatTruncation,
++                        Plan9Format]>,
+              DiagCategory<"Format String Issue">;
+ def FormatNonLiteral : DiagGroup<"format-nonliteral", [MissingFormatAttribute]>;
+ def Format2 : DiagGroup<"format=2",
+diff --git a/clang/include/clang/Basic/DiagnosticParseKinds.td b/clang/include/clang/Basic/DiagnosticParseKinds.td
+index 7671f003c8b804255cc4c2823c8f3d9bf08621e2..841b2075a50738d2c1a0eca6f464cb08b73aef14 100644
+--- a/clang/include/clang/Basic/DiagnosticParseKinds.td
++++ b/clang/include/clang/Basic/DiagnosticParseKinds.td
+@@ -1373,6 +1373,8 @@ def err_pragma_comment_unknown_kind : Error<"unknown kind of pragma comment">;
+ // PS4 recognizes only #pragma comment(lib)
+ def warn_pragma_comment_ignored : Warning<"'#pragma comment %0' ignored">,
+   InGroup<IgnoredPragmas>;
++def warn_pragma_varargck_malformed : Warning<"syntax in '#pragma varargck'">,
++  InGroup<IgnoredPragmas>;
+ def warn_pragma_comment_once
+     : Warning<"'#pragma comment %0' "
+               "ignored: it can be specified only once per translation unit">,
+diff --git a/clang/include/clang/Basic/DiagnosticSemaKinds.td b/clang/include/clang/Basic/DiagnosticSemaKinds.td
+index fdd82bde09229092bec2e5ab2adfadf6346dfc1c..1be79cf686c5ea73a7cbc268948664b2847f379a 100644
+--- a/clang/include/clang/Basic/DiagnosticSemaKinds.td
++++ b/clang/include/clang/Basic/DiagnosticSemaKinds.td
+@@ -10757,6 +10757,19 @@ def warn_scanf_nonzero_width : Warning<
+ def warn_format_unsupported_type : Warning<
+   "format specifies type %0 which is not supported yet">,
+   InGroup<Format>;
++// Plan 9's #pragma varargck (kencc's format checking and its words)
++def warn_plan9_format_mismatch : Warning<
++  "format mismatch '%%%0' %1, arg %2">, InGroup<Plan9Format>;
++def warn_plan9_format_star_mismatch : Warning<
++  "format mismatch '*' in '%%%0' %1, arg %2">, InGroup<Plan9Format>;
++def warn_plan9_format_extra_args : Warning<
++  "more arguments than format %0">, InGroup<Plan9Format>;
++def warn_plan9_format_missing_args : Warning<
++  "more format than arguments '%%%0'">, InGroup<Plan9Format>;
++def warn_plan9_format_no_arg : Warning<
++  "cannot find the format argument">, InGroup<Plan9Format>;
++def warn_plan9_varargck_redefined : Warning<
++  "varargck %0 already defined with argument %1">, InGroup<Plan9Format>;
+ def warn_format_conversion_argument_type_mismatch : Warning<
+   "format specifies type %0 but the argument has "
+   "%select{type|underlying type}2 %1">,
+diff --git a/clang/include/clang/Parse/Parser.h b/clang/include/clang/Parse/Parser.h
+index 892715a6dac262e6d6e05ec1bc0d5527e2f89c69..d06aa2d3f7de3904f9be930e0fb7606b93a92ac1 100644
+--- a/clang/include/clang/Parse/Parser.h
++++ b/clang/include/clang/Parse/Parser.h
+@@ -7107,6 +7107,7 @@ private:
+   std::unique_ptr<PragmaHandler> OpenACCHandler;
+   std::unique_ptr<PragmaHandler> PCSectionHandler;
+   std::unique_ptr<PragmaHandler> MSCommentHandler;
++  std::unique_ptr<PragmaHandler> Plan9VarargckHandler;
+   std::unique_ptr<PragmaHandler> MSDetectMismatchHandler;
+   std::unique_ptr<PragmaHandler> FPEvalMethodHandler;
+   std::unique_ptr<PragmaHandler> FloatControlHandler;
+diff --git a/clang/include/clang/Sema/Sema.h b/clang/include/clang/Sema/Sema.h
+index 2b7998e79d55cfdcf8a05561f7baba96917ddbec..6ed227bb3137869bb7f63b73f549920ce6cc5656 100644
+--- a/clang/include/clang/Sema/Sema.h
++++ b/clang/include/clang/Sema/Sema.h
+@@ -176,6 +176,7 @@ class SemaOpenACC;
+ class SemaOpenCL;
+ class SemaOpenMP;
+ class SemaPPC;
++class SemaPlan9;
+ class SemaPseudoObject;
+ class SemaRISCV;
+ class SemaSPIRV;
+@@ -1542,6 +1543,11 @@ public:
+     return *PPCPtr;
+   }
+ 
++  SemaPlan9 &Plan9() {
++    assert(Plan9Ptr);
++    return *Plan9Ptr;
++  }
++
+   SemaPseudoObject &PseudoObject() {
+     assert(PseudoObjectPtr);
+     return *PseudoObjectPtr;
+@@ -1633,6 +1639,7 @@ private:
+   std::unique_ptr<SemaOpenCL> OpenCLPtr;
+   std::unique_ptr<SemaOpenMP> OpenMPPtr;
+   std::unique_ptr<SemaPPC> PPCPtr;
++  std::unique_ptr<SemaPlan9> Plan9Ptr;
+   std::unique_ptr<SemaPseudoObject> PseudoObjectPtr;
+   std::unique_ptr<SemaRISCV> RISCVPtr;
+   std::unique_ptr<SemaSPIRV> SPIRVPtr;
+diff --git a/clang/include/clang/Sema/SemaPlan9.h b/clang/include/clang/Sema/SemaPlan9.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..02cb29b0e2166898444d4e5d59cde1580e5d48b3
+--- /dev/null
++++ b/clang/include/clang/Sema/SemaPlan9.h
+@@ -0,0 +1,98 @@
++//===----- SemaPlan9.h ---- Plan 9 C: #pragma varargck --------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++///
++/// \file
++/// Plan 9's print format checking as kencc does it (9front's
++/// sys/src/cmd/cc/dpchk.c): "#pragma varargck argpos NAME N" names a function
++/// whose N-th argument is a format, "type FMT TYPE" says which argument type
++/// a conversion takes (void: none), "flag 'c'" makes c a flag. Each call of
++/// such a function with a string literal for its format has its arguments
++/// checked against the conversions.
++///
++//===----------------------------------------------------------------------===//
++
++#ifndef LLVM_CLANG_SEMA_SEMAPLAN9_H
++#define LLVM_CLANG_SEMA_SEMAPLAN9_H
++
++#include "clang/AST/Type.h"
++#include "clang/Basic/SourceLocation.h"
++#include "clang/Sema/SemaBase.h"
++#include "llvm/ADT/DenseMap.h"
++#include "llvm/ADT/StringRef.h"
++#include <string>
++#include <vector>
++
++namespace clang {
++class CallExpr;
++class Expr;
++class FunctionDecl;
++class IdentifierInfo;
++
++class SemaPlan9 : public SemaBase {
++public:
++  SemaPlan9(Sema &S);
++
++  /// #pragma varargck argpos NAME POS
++  void ActOnPragmaVarargckArgpos(const IdentifierInfo *Name, unsigned Pos,
++                                 SourceLocation Loc);
++  /// #pragma varargck type "FMT" TYPE [*...]; the type name is looked up
++  /// at file scope when a call is checked.
++  void ActOnPragmaVarargckType(llvm::StringRef Fmt, const IdentifierInfo *Type,
++                               unsigned Stars, SourceLocation Loc);
++  /// #pragma varargck flag 'C'
++  void ActOnPragmaVarargckFlag(uint32_t C);
++
++  /// Checks a call of a function named by an argpos pragma.
++  void checkVarargckCall(const FunctionDecl *FD, const CallExpr *Call);
++
++private:
++  /// What a character of a conversion is (kencc's Fignor, Fstar, Fl, Fvl).
++  enum CharKind : uint8_t { CK_Verb, CK_Ignore, CK_Star, CK_L, CK_VL };
++
++  /// A conversion's signature: its l and ll (or z) flags and its verb
++  /// (0: none; x and X are o's).
++  struct Signature {
++    bool L = false, VL = false;
++    uint32_t Verb = 0;
++    bool operator==(const Signature &O) const {
++      return L == O.L && VL == O.VL && Verb == O.Verb;
++    }
++  };
++
++  struct Proto {
++    Signature Sig;
++    const IdentifierInfo *TypeName;
++    unsigned Stars;
++    SourceLocation Loc;
++    /// the type, once its name is one
++    mutable QualType Type;
++  };
++
++  void init();
++  CharKind kindOf(uint32_t C) const;
++  /// The signature of the conversion at S[I] (the text after a '%'): its
++  /// text in Spec, the '*' it holds in NStar.
++  Signature getFlag(llvm::StringRef S, size_t I, unsigned &NStar,
++                    std::string &Spec) const;
++  /// A proto's type, null while its name is not (yet) a type.
++  QualType resolve(const Proto &P) const;
++  /// kencc's sametype for an argument: void * matches any pointer at the
++  /// top level, qualifiers do not count.
++  bool sameType(QualType A, QualType B, bool Top) const;
++  /// The type an argument is checked by (an enum's: see there).
++  QualType argType(const Expr *E) const;
++
++  bool Inited = false;
++  llvm::DenseMap<uint32_t, CharKind> Kinds;
++  llvm::DenseMap<const IdentifierInfo *, unsigned> ArgPos;
++  std::vector<Proto> Protos;
++};
++
++} // namespace clang
++
++#endif // LLVM_CLANG_SEMA_SEMAPLAN9_H
+diff --git a/clang/lib/Parse/ParsePragma.cpp b/clang/lib/Parse/ParsePragma.cpp
+index f58d2c70b7d98076e185218304b71c7b06e625be..37cf66f1a5aa75fed3dc28147f2f989b82140d10 100644
+--- a/clang/lib/Parse/ParsePragma.cpp
++++ b/clang/lib/Parse/ParsePragma.cpp
+@@ -23,10 +23,12 @@
+ #include "clang/Sema/Scope.h"
+ #include "clang/Sema/SemaCUDA.h"
+ #include "clang/Sema/SemaCodeCompletion.h"
++#include "clang/Sema/SemaPlan9.h"
+ #include "clang/Sema/SemaRISCV.h"
+ #include "llvm/ADT/ArrayRef.h"
+ #include "llvm/ADT/ScopeExit.h"
+ #include "llvm/ADT/StringSwitch.h"
++#include "llvm/Support/ConvertUTF.h"
+ #include <optional>
+ using namespace clang;
+ 
+@@ -240,6 +242,18 @@ private:
+   bool SeenCopyrightInTU = false; // TU-scoped
+ };
+ 
++/// PragmaVarargckHandler - "\#pragma varargck ...", Plan 9's format checking
++/// (kencc): "argpos NAME N", "type "FMT" TYPE[*...]", "flag 'C'".
++struct PragmaVarargckHandler : public PragmaHandler {
++  PragmaVarargckHandler(Sema &Actions)
++      : PragmaHandler("varargck"), Actions(Actions) {}
++  void HandlePragma(Preprocessor &PP, PragmaIntroducer Introducer,
++                    Token &FirstToken) override;
++
++private:
++  Sema &Actions;
++};
++
+ struct PragmaDetectMismatchHandler : public PragmaHandler {
+   PragmaDetectMismatchHandler(Sema &Actions)
+     : PragmaHandler("detect_mismatch"), Actions(Actions) {}
+@@ -487,6 +501,11 @@ void Parser::initializePragmaHandlers() {
+     PP.AddPragmaHandler(MSCommentHandler.get());
+   }
+ 
++  if (getTargetInfo().getTriple().isOSPlan9()) {
++    Plan9VarargckHandler = std::make_unique<PragmaVarargckHandler>(Actions);
++    PP.AddPragmaHandler(Plan9VarargckHandler.get());
++  }
++
+   FloatControlHandler = std::make_unique<PragmaFloatControlHandler>(Actions);
+   PP.AddPragmaHandler(FloatControlHandler.get());
+   if (getLangOpts().MicrosoftExt) {
+@@ -615,6 +634,11 @@ void Parser::resetPragmaHandlers() {
+     MSCommentHandler.reset();
+   }
+ 
++  if (Plan9VarargckHandler) {
++    PP.RemovePragmaHandler(Plan9VarargckHandler.get());
++    Plan9VarargckHandler.reset();
++  }
++
+   PP.RemovePragmaHandler("clang", PCSectionHandler.get());
+   PCSectionHandler.reset();
+ 
+@@ -3277,6 +3301,104 @@ void PragmaDetectMismatchHandler::HandlePragma(Preprocessor &PP,
+ ///
+ /// "foo" is a string, which is fully macro expanded, and permits string
+ /// concatenation, embedded escape characters etc.  See MSDN for more details.
++// kencc reads the pragma's words as they stand: no macro is expanded.
++void PragmaVarargckHandler::HandlePragma(Preprocessor &PP,
++                                         PragmaIntroducer Introducer,
++                                         Token &Tok) {
++  SourceLocation Loc = Tok.getLocation();
++  auto Bad = [&] {
++    PP.Diag(Loc, diag::warn_pragma_varargck_malformed);
++    while (Tok.isNot(tok::eod))
++      PP.LexUnexpandedToken(Tok);
++  };
++  // the end of the line
++  auto End = [&] {
++    PP.LexUnexpandedToken(Tok);
++    if (Tok.isNot(tok::eod)) {
++      Bad();
++      return false;
++    }
++    return true;
++  };
++
++  PP.LexUnexpandedToken(Tok);
++  if (Tok.isNot(tok::identifier))
++    return Bad();
++  StringRef Kind = Tok.getIdentifierInfo()->getName();
++  SmallString<32> Buf;
++
++  if (Kind == "argpos") {
++    PP.LexUnexpandedToken(Tok);
++    IdentifierInfo *Name = Tok.getIdentifierInfo();
++    if (!Name || Tok.is(tok::eod))
++      return Bad();
++    PP.LexUnexpandedToken(Tok);
++    unsigned Pos;
++    if (Tok.isNot(tok::numeric_constant) ||
++        PP.getSpelling(Tok, Buf).getAsInteger(10, Pos))
++      return Bad();
++    if (End())
++      Actions.Plan9().ActOnPragmaVarargckArgpos(Name, Pos, Loc);
++    return;
++  }
++
++  if (Kind == "flag") {
++    // 'c' or '\c': the character itself, no escape is translated
++    PP.LexUnexpandedToken(Tok);
++    if (Tok.isNot(tok::char_constant))
++      return Bad();
++    StringRef S = PP.getSpelling(Tok, Buf);
++    if (S.size() < 3 || S.front() != '\'' || S.back() != '\'')
++      return Bad();
++    S = S.drop_front().drop_back();
++    if (S.front() == '\\')
++      S = S.drop_front();
++    else if (S.front() == '\'')
++      return Bad();
++    const llvm::UTF8 *P = reinterpret_cast<const llvm::UTF8 *>(S.data());
++    const llvm::UTF8 *E = P + S.size();
++    llvm::UTF32 C;
++    if (S.empty() ||
++        llvm::convertUTF8Sequence(&P, E, &C, llvm::strictConversion) !=
++            llvm::conversionOK ||
++        P != E)
++      return Bad();
++    if (End())
++      Actions.Plan9().ActOnPragmaVarargckFlag(C);
++    return;
++  }
++
++  if (Kind == "type") {
++    // "FMT" without blanks, then a type's name and its stars
++    PP.LexUnexpandedToken(Tok);
++    if (Tok.isNot(tok::string_literal))
++      return Bad();
++    StringRef S = PP.getSpelling(Tok, Buf);
++    if (S.size() < 2 || S.front() != '"' || S.back() != '"')
++      return Bad();
++    std::string Fmt = S.drop_front().drop_back().str();
++    if (StringRef(Fmt).find_first_of(" ") != StringRef::npos)
++      return Bad();
++    PP.LexUnexpandedToken(Tok);
++    IdentifierInfo *Type = Tok.getIdentifierInfo();
++    if (!Type || Tok.is(tok::eod))
++      return Bad();
++    unsigned Stars = 0;
++    for (;;) {
++      PP.LexUnexpandedToken(Tok);
++      if (Tok.is(tok::eod))
++        break;
++      if (Tok.isNot(tok::star))
++        return Bad();
++      ++Stars;
++    }
++    Actions.Plan9().ActOnPragmaVarargckType(Fmt, Type, Stars, Loc);
++    return;
++  }
++
++  Bad();
++}
++
+ void PragmaCommentHandler::HandlePragma(Preprocessor &PP,
+                                         PragmaIntroducer Introducer,
+                                         Token &Tok) {
+diff --git a/clang/lib/Sema/CMakeLists.txt b/clang/lib/Sema/CMakeLists.txt
+index ef729e22c1dc8eb2df0705dae51e15c91796195a..1c6d896423c2e26dcf45121d6f1bd9b8c7b50f85 100644
+--- a/clang/lib/Sema/CMakeLists.txt
++++ b/clang/lib/Sema/CMakeLists.txt
+@@ -81,6 +81,7 @@ add_clang_library(clangSema
+   SemaOpenMP.cpp
+   SemaOverload.cpp
+   SemaPPC.cpp
++  SemaPlan9.cpp
+   SemaPseudoObject.cpp
+   SemaRISCV.cpp
+   SemaStmt.cpp
+diff --git a/clang/lib/Sema/Sema.cpp b/clang/lib/Sema/Sema.cpp
+index 5a7dfb1b5b0350adb7442e2a4fb10d91a8f82991..93e4963243aea149195c7ee229bdb916e070c740 100644
+--- a/clang/lib/Sema/Sema.cpp
++++ b/clang/lib/Sema/Sema.cpp
+@@ -60,6 +60,7 @@
+ #include "clang/Sema/SemaOpenCL.h"
+ #include "clang/Sema/SemaOpenMP.h"
+ #include "clang/Sema/SemaPPC.h"
++#include "clang/Sema/SemaPlan9.h"
+ #include "clang/Sema/SemaPseudoObject.h"
+ #include "clang/Sema/SemaRISCV.h"
+ #include "clang/Sema/SemaSPIRV.h"
+@@ -299,6 +300,7 @@ Sema::Sema(Preprocessor &pp, ASTContext &ctxt, ASTConsumer &consumer,
+       OpenCLPtr(std::make_unique<SemaOpenCL>(*this)),
+       OpenMPPtr(std::make_unique<SemaOpenMP>(*this)),
+       PPCPtr(std::make_unique<SemaPPC>(*this)),
++      Plan9Ptr(std::make_unique<SemaPlan9>(*this)),
+       PseudoObjectPtr(std::make_unique<SemaPseudoObject>(*this)),
+       RISCVPtr(std::make_unique<SemaRISCV>(*this)),
+       SPIRVPtr(std::make_unique<SemaSPIRV>(*this)),
+diff --git a/clang/lib/Sema/SemaChecking.cpp b/clang/lib/Sema/SemaChecking.cpp
+index dbc60aab1caa8d0f6fcb246e20cb321d4d3a1c0d..c759c11334467fc8179ad8a4a2f86d063f705597 100644
+--- a/clang/lib/Sema/SemaChecking.cpp
++++ b/clang/lib/Sema/SemaChecking.cpp
+@@ -74,6 +74,7 @@
+ #include "clang/Sema/SemaObjC.h"
+ #include "clang/Sema/SemaOpenCL.h"
+ #include "clang/Sema/SemaPPC.h"
++#include "clang/Sema/SemaPlan9.h"
+ #include "clang/Sema/SemaRISCV.h"
+ #include "clang/Sema/SemaSPIRV.h"
+ #include "clang/Sema/SemaSYCL.h"
+@@ -4720,6 +4721,8 @@ bool Sema::CheckFunctionCall(FunctionDecl *FDecl, CallExpr *TheCall,
+   CheckAbsoluteValueFunction(TheCall, FDecl);
+   CheckMaxUnsignedZero(TheCall, FDecl);
+   CheckInfNaNFunction(TheCall, FDecl);
++  // Plan 9's #pragma varargck
++  Plan9().checkVarargckCall(FDecl, TheCall);
+ 
+   if (getLangOpts().ObjC)
+     ObjC().DiagnoseCStringFormatDirectiveInCFAPI(FDecl, Args, NumArgs);
+diff --git a/clang/lib/Sema/SemaPlan9.cpp b/clang/lib/Sema/SemaPlan9.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..5afe9f8e5080814f7e6ff06318558841832d3087
+--- /dev/null
++++ b/clang/lib/Sema/SemaPlan9.cpp
+@@ -0,0 +1,290 @@
++//===------ SemaPlan9.cpp ---- Plan 9 C: #pragma varargck -----------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++//
++// kencc's format checking (9front's sys/src/cmd/cc/dpchk.c), written from
++// what it does: the same conversions, the same matching of argument types,
++// the same warnings.
++//
++//===----------------------------------------------------------------------===//
++
++#include "clang/Sema/SemaPlan9.h"
++#include "clang/AST/ASTContext.h"
++#include "clang/AST/Decl.h"
++#include "clang/AST/Expr.h"
++#include "clang/Basic/DiagnosticSema.h"
++#include "clang/Basic/TargetInfo.h"
++#include "clang/Sema/Lookup.h"
++#include "clang/Sema/Sema.h"
++#include "llvm/ADT/StringSwitch.h"
++#include "llvm/Support/ConvertUTF.h"
++
++using namespace clang;
++
++SemaPlan9::SemaPlan9(Sema &S) : SemaBase(S) {}
++
++// kencc's arginit: digits . # u h + - are flags without meaning for the
++// type, * takes an int, l is long, ll and z (where a pointer is as wide as a
++// vlong) are vlong; x and X are o.
++void SemaPlan9::init() {
++  if (Inited)
++    return;
++  Inited = true;
++  for (uint32_t C = '0'; C <= '9'; ++C)
++    Kinds[C] = CK_Ignore;
++  for (uint32_t C : {'.', '#', 'u', 'h', '+', '-'})
++    Kinds[C] = CK_Ignore;
++  Kinds['*'] = CK_Star;
++  Kinds['l'] = CK_L;
++  const TargetInfo &TI = getASTContext().getTargetInfo();
++  Kinds['z'] =
++      TI.getLongLongWidth() == TI.getPointerWidth(LangAS::Default) ? CK_VL
++                                                                   : CK_L;
++}
++
++SemaPlan9::CharKind SemaPlan9::kindOf(uint32_t C) const {
++  auto It = Kinds.find(C);
++  return It == Kinds.end() ? CK_Verb : It->second;
++}
++
++// One character of S at I, decoded from UTF-8 (a byte that is not UTF-8
++// stands for itself); 0 at the end.
++static uint32_t nextChar(llvm::StringRef S, size_t &I) {
++  if (I >= S.size())
++    return 0;
++  const llvm::UTF8 *P = reinterpret_cast<const llvm::UTF8 *>(S.data() + I);
++  const llvm::UTF8 *E = reinterpret_cast<const llvm::UTF8 *>(S.data() + S.size());
++  llvm::UTF32 C;
++  const llvm::UTF8 *Start = P;
++  if (llvm::convertUTF8Sequence(&P, E, &C, llvm::strictConversion) !=
++      llvm::conversionOK) {
++    C = static_cast<unsigned char>(S[I]);
++    P = Start + 1;
++  }
++  I += P - Start;
++  return C;
++}
++
++// kencc's getflag: the flags up to the verb, the first character that is no
++// flag; a character from 512 up ends the conversion without one.
++SemaPlan9::Signature SemaPlan9::getFlag(llvm::StringRef S, size_t I,
++                                        unsigned &NStar,
++                                        std::string &Spec) const {
++  Signature Sig;
++  NStar = 0;
++  Spec.clear();
++  while (Spec.size() < 99) {
++    size_t Start = I;
++    uint32_t C = nextChar(S, I);
++    if (C == 0 || C >= 512)
++      break;
++    Spec.append(S.data() + Start, I - Start);
++    switch (kindOf(C)) {
++    case CK_Star:
++      ++NStar;
++      continue;
++    case CK_Ignore:
++      continue;
++    case CK_L:
++      if (Sig.L)
++        Sig.VL = true;
++      Sig.L = true;
++      continue;
++    case CK_VL:
++      Sig.VL = true;
++      continue;
++    case CK_Verb:
++      Sig.Verb = (C == 'x' || C == 'X') ? 'o' : C;
++      return Sig;
++    }
++  }
++  return Sig;
++}
++
++void SemaPlan9::ActOnPragmaVarargckArgpos(const IdentifierInfo *Name,
++                                          unsigned Pos, SourceLocation Loc) {
++  auto [It, New] = ArgPos.try_emplace(Name, Pos);
++  if (!New && It->second != Pos)
++    Diag(Loc, diag::warn_plan9_varargck_redefined) << Name << It->second;
++}
++
++void SemaPlan9::ActOnPragmaVarargckType(llvm::StringRef Fmt,
++                                        const IdentifierInfo *Type,
++                                        unsigned Stars, SourceLocation Loc) {
++  init();
++  unsigned NStar;
++  std::string Spec;
++  Signature Sig = getFlag(Fmt, 0, NStar, Spec);
++  for (const Proto &P : Protos)
++    if (P.Sig == Sig && P.TypeName == Type && P.Stars == Stars)
++      return;
++  Protos.push_back({Sig, Type, Stars, Loc, QualType()});
++}
++
++void SemaPlan9::ActOnPragmaVarargckFlag(uint32_t C) {
++  init();
++  if (C < 512)
++    Kinds[C] = CK_Ignore;
++}
++
++QualType SemaPlan9::resolve(const Proto &P) const {
++  if (!P.Type.isNull())
++    return P.Type;
++  ASTContext &Ctx = getASTContext();
++  QualType T = llvm::StringSwitch<QualType>(P.TypeName->getName())
++                   .Case("void", Ctx.VoidTy)
++                   .Case("char", Ctx.CharTy)
++                   .Case("short", Ctx.ShortTy)
++                   .Case("int", Ctx.IntTy)
++                   .Case("signed", Ctx.IntTy)
++                   .Case("unsigned", Ctx.UnsignedIntTy)
++                   .Case("long", Ctx.LongTy)
++                   .Case("float", Ctx.FloatTy)
++                   .Case("double", Ctx.DoubleTy)
++                   .Case("_Bool", Ctx.BoolTy)
++                   .Default(QualType());
++  if (T.isNull()) {
++    Sema &S = SemaRef;
++    if (!S.TUScope)
++      return QualType();
++    NamedDecl *D =
++        S.LookupSingleName(S.TUScope, DeclarationName(
++                                          const_cast<IdentifierInfo *>(P.TypeName)),
++                           P.Loc, Sema::LookupOrdinaryName);
++    auto *TD = dyn_cast_or_null<TypedefNameDecl>(D);
++    if (!TD)
++      return QualType();
++    T = TD->getUnderlyingType();
++  }
++  for (unsigned I = 0; I < P.Stars; ++I)
++    T = Ctx.getPointerType(T);
++  P.Type = T;
++  return T;
++}
++
++bool SemaPlan9::sameType(QualType A, QualType B, bool Top) const {
++  ASTContext &Ctx = getASTContext();
++  A = Ctx.getCanonicalType(A).getUnqualifiedType();
++  B = Ctx.getCanonicalType(B).getUnqualifiedType();
++  if (A == B)
++    return true;
++  const auto *PA = A->getAs<PointerType>();
++  const auto *PB = B->getAs<PointerType>();
++  if (!PA || !PB)
++    return false;
++  QualType EA = PA->getPointeeType(), EB = PB->getPointeeType();
++  if (Top && (EA->isVoidType() || EB->isVoidType()))
++    return true;
++  return sameType(EA, EB, false);
++}
++
++// The type an argument is checked by. kencc's enums are int; here an enum
++// is int when its integer type is no wider (gcc's choice of unsigned int for
++// an enum without negative values is no mismatch), its integer type else.
++QualType SemaPlan9::argType(const Expr *E) const {
++  QualType T = E->getType();
++  // a variadic argument's promotion has cast an enum to its integer type
++  if (const auto *ET = E->IgnoreParenImpCasts()->getType()->getAs<EnumType>())
++    if (const EnumDecl *ED = ET->getDecl()->getDefinition()) {
++      ASTContext &Ctx = getASTContext();
++      T = ED->getIntegerType();
++      if (!T.isNull() && Ctx.getTypeSize(T) <= Ctx.getTypeSize(Ctx.IntTy))
++        T = Ctx.IntTy;
++    }
++  return T;
++}
++
++// kencc's checkargs: each '%' of the format takes the arguments its '*'
++// and its verb want, in order; a verb whose type is void takes none.
++void SemaPlan9::checkVarargckCall(const FunctionDecl *FD,
++                                  const CallExpr *Call) {
++  if (ArgPos.empty())
++    return;
++  const IdentifierInfo *II = FD->getIdentifier();
++  if (!II)
++    return;
++  auto It = ArgPos.find(II);
++  if (It == ArgPos.end())
++    return;
++  init();
++  unsigned Pos = It->second, N = Call->getNumArgs();
++  if (Pos == 0 || Pos > N) {
++    Diag(Call->getBeginLoc(), diag::warn_plan9_format_no_arg);
++    return;
++  }
++  const auto *SL =
++      dyn_cast<StringLiteral>(Call->getArg(Pos - 1)->IgnoreParenImpCasts());
++  if (!SL || !SL->isOrdinary())
++    return;
++  llvm::StringRef S = SL->getString();
++  ASTContext &Ctx = getASTContext();
++
++  unsigned A = Pos; // the next argument (0-based); its number is A+1
++  size_t I = 0;
++  for (;;) {
++    size_t Pc = S.find('%', I);
++    if (Pc == llvm::StringRef::npos) {
++      if (A < N)
++        Diag(Call->getArg(A)->getBeginLoc(), diag::warn_plan9_format_extra_args)
++            << Call->getArg(A)->getType();
++      return;
++    }
++    I = Pc + 1;
++    unsigned NStar;
++    std::string Spec;
++    Signature Sig = getFlag(S, I, NStar, Spec);
++    for (; NStar > 0; --NStar) {
++      if (A >= N) {
++        Diag(Call->getRParenLoc(), diag::warn_plan9_format_missing_args)
++            << Spec;
++        return;
++      }
++      const Expr *E = Call->getArg(A++);
++      if (E->containsErrors())
++        continue;
++      QualType T = argType(E);
++      if (!sameType(T, Ctx.IntTy, true) && !sameType(T, Ctx.UnsignedIntTy, true))
++        Diag(E->getBeginLoc(), diag::warn_plan9_format_star_mismatch)
++            << Spec << E->getType() << A;
++    }
++    bool Void = false;
++    for (const Proto &P : Protos)
++      if (P.Sig == Sig && P.Stars == 0) {
++        QualType T = resolve(P);
++        if (!T.isNull() && T->isVoidType()) {
++          Void = true;
++          break;
++        }
++      }
++    if (Void) {
++      // kencc steps over the character after the '%' only
++      ++I;
++      continue;
++    }
++    if (A >= N) {
++      Diag(Call->getRParenLoc(), diag::warn_plan9_format_missing_args) << Spec;
++      return;
++    }
++    const Expr *E = Call->getArg(A++);
++    if (E->containsErrors())
++      continue;
++    QualType T = argType(E);
++    bool Ok = false;
++    for (const Proto &P : Protos) {
++      if (!(P.Sig == Sig))
++        continue;
++      QualType PT = resolve(P);
++      if (!PT.isNull() && sameType(T, PT, true)) {
++        Ok = true;
++        break;
++      }
++    }
++    if (!Ok)
++      Diag(E->getBeginLoc(), diag::warn_plan9_format_mismatch)
++          << Spec << E->getType() << A;
++  }
++}
+diff --git a/clang/test/Sema/plan9-varargck.c b/clang/test/Sema/plan9-varargck.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..9fad3b7b6a7affcf80ccd3751ef12bc2f8e48a4a
+--- /dev/null
++++ b/clang/test/Sema/plan9-varargck.c
+@@ -0,0 +1,63 @@
++// RUN: %clang_cc1 -triple x86_64-unknown-plan9 -fsyntax-only -verify %s
++// RUN: %clang_cc1 -triple i686-unknown-plan9 -fsyntax-only -verify %s
++// RUN: %clang_cc1 -triple x86_64-unknown-linux -fsyntax-only -verify=linux %s
++
++// Plan 9's #pragma varargck, as kencc checks it (9front's sys/src/cmd/cc/dpchk.c).
++// linux-no-diagnostics
++
++typedef unsigned int uint;
++typedef long long vlong;
++typedef unsigned long uintptr;
++typedef struct Point Point;
++struct Point { int x, y; };
++typedef enum { Ea, Eb } E;            // unsigned int for gcc and clang
++typedef enum { Wa = -1, Wb = 1LL << 40 } W; // long
++
++int print(char *, ...);
++int fprint(int, char *, ...);
++int notchecked(char *, ...);
++
++#pragma varargck argpos print 1
++#pragma varargck argpos fprint 2
++#pragma varargck type "d" int
++#pragma varargck type "d" uint
++#pragma varargck type "x" int
++#pragma varargck type "lld" vlong
++#pragma varargck type "zd" uintptr
++#pragma varargck type "s" char*
++#pragma varargck type "p" void*
++#pragma varargck type "r" void
++#pragma varargck type "%" void
++#pragma varargck type "P" Point
++#pragma varargck type "c" int
++#pragma varargck flag ','
++#pragma varargck argpos print 2 // expected-warning {{varargck 'print' already defined with argument 1}}
++#pragma varargck bogus // expected-warning {{syntax in '#pragma varargck'}}
++#pragma varargck type d int // expected-warning {{syntax in '#pragma varargck'}}
++
++void f(int i, uint u, long l, vlong v, char *s, unsigned char *us, Point p,
++       Point *pp, double d, char c, E e, W w, const char *cs) {
++  print("%d %ud %5d %-d %,d\n", i, u, i, i, i);
++  print("%x %o %X\n", i, i, i); // x and X are o's: one prototype for the three
++  print("%lld %s %r %% %P %c %c\n", v, s, p, c, i);
++  print("%p %p %s\n", s, pp, cs); // void * takes any pointer, const is no matter
++  print("%d %d %x\n", e, Ea, e); // an enum is int (kencc's), unless wider
++  print("%d\n", w); // expected-warning {{format mismatch '%d' 'long}}
++  print("%*d\n", i, i);
++  fprint(2, "%s\n", s);
++  notchecked("%d\n", s);
++
++  print("%d\n", l);   // expected-warning {{format mismatch '%d' 'long', arg 2}}
++  print("%ld\n", l);  // expected-warning {{format mismatch '%ld' 'long', arg 2}}
++  print("%s\n", us);  // expected-warning {{format mismatch '%s' 'unsigned char *', arg 2}}
++  print("%d\n", d);   // expected-warning {{format mismatch '%d' 'double', arg 2}}
++  print("%P\n", pp);  // expected-warning {{format mismatch '%P' 'Point *'}}
++  print("%*d\n", s, i); // expected-warning {{format mismatch '*' in '%*d' 'char *', arg 2}}
++  print("%d %d\n", i); // expected-warning {{more format than arguments '%d'}}
++  print("%d\n", i, i); // expected-warning {{more arguments than format 'int'}}
++  fprint(2, "%s\n", i); // expected-warning {{format mismatch '%s' 'int', arg 3}}
++  // z: vlong's flag where a pointer is as wide as a vlong (long's elsewhere),
++  // a signature of its own beside ll's
++  print("%zd\n", (uintptr)0);
++  print("%lld\n", (uintptr)0); // expected-warning {{format mismatch '%lld' 'uintptr'}}
++}
